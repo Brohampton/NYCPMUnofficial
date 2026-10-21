@@ -340,7 +340,8 @@ input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
 .msg.ok{background:var(--accent-soft);color:var(--accent)}
 .adminwrap{display:grid;gap:26px;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);padding-bottom:64px}
 @media (max-width:900px){.adminwrap{grid-template-columns:1fr}}
-.adminbox{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:24px}
+.adminbox{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:24px;min-width:0;overflow-wrap:anywhere}
+.adminwrap>*{min-width:0}
 .adminrow{display:flex;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
 .adminrow:last-child{border-bottom:0}
 .adminrow b{flex:1;font-weight:500;font-size:.95rem}
@@ -463,6 +464,49 @@ select.subsel{font:inherit;font-size:.82rem;color:var(--ink);background:var(--bg
 .fcrate button span{font-size:.78rem;color:var(--muted)}
 .fcrate button.primary span{color:inherit;opacity:.8}
 @media (max-width:620px){.fcrate{grid-template-columns:repeat(2,1fr)}}
+
+/* a slide whose image file is missing */
+.slidebox.imgmissing{min-height:220px;display:flex;align-items:center;justify-content:center;
+  background:repeating-linear-gradient(45deg,var(--sunk,#eee),var(--sunk,#eee) 10px,transparent 10px,transparent 20px)}
+.slidebox.imgmissing img{display:none}
+.slidebox .missnote{display:flex;flex-direction:column;gap:7px;max-width:40ch;margin:0 auto;padding:18px 20px;
+  text-align:center;border-radius:12px;border:1px solid var(--line);background:var(--panel);
+  font-size:.9rem;color:var(--muted);line-height:1.5}
+.slidebox .missnote b{color:var(--ink)}
+.slidebox .missnote .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.84rem;
+  word-break:break-all;color:var(--ink)}
+
+/* ---- admin: user accounts ---- */
+.userbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.userbar input[type=search]{flex:1 1 210px;min-width:0}
+.userbar select{flex:0 0 auto}
+.userstat{font-size:.86rem;color:var(--muted);margin:0 2px 10px}
+.userstat .warn{color:var(--bad)}
+.urow{border:1px solid var(--line);border-radius:12px;padding:11px 13px;margin-bottom:9px;background:var(--panel)}
+.uhead{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.uhead b{font-size:1rem}
+.umail{font:inherit;font-size:.85rem;color:var(--muted);background:none;border:0;padding:0;cursor:pointer;
+  text-decoration:underline dotted;text-underline-offset:2px}
+.umail:hover{color:var(--ink)}
+.umeta{font-size:.83rem;color:var(--muted);margin-top:3px}
+.uexams{font-size:.82rem;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
+.uacts{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
+.ureset{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:8px;padding:7px 10px;
+  border-radius:9px;background:var(--sunk);border:1px solid var(--line);font-size:.85rem}
+.ureset .mono.big{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.05rem;font-weight:600;
+  letter-spacing:.09em;color:var(--ink)}
+.ureset .fine{font-size:.8rem;color:var(--muted)}
+.statepill.ok{border-color:var(--good,#2e7d5b);color:var(--good,#2e7d5b)}
+.userprob{border:1px solid var(--line);border-left:3px solid var(--bad);border-radius:0 12px 12px 0;
+  padding:13px 15px;background:var(--panel)}
+.userprob h4{margin:0 0 7px;font-size:.98rem}
+.userprob p{margin:0 0 8px;font-size:.9rem}
+.userprob .fine{font-size:.85rem;color:var(--muted)}
+.userprob .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;word-break:break-all}
+.userprob code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85em;background:var(--sunk);
+  padding:1px 5px;border-radius:4px}
+.keyfix{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 4px}
+.keyfix input{flex:1 1 220px;min-width:0}
 </style>
 </head>
 <body>
@@ -830,10 +874,20 @@ select.subsel{font:inherit;font-size:.82rem;color:var(--ink);background:var(--bg
       </div>
       <div class="adminbox" style="margin-bottom:22px">
         <h3>User accounts</h3>
-        <p style="color:var(--muted);font-size:.9rem;margin-top:0">Everyone who has signed up, with their saved attempts. "Make a reset code" emails them a code and shows it here so you can read it out if their email is not working.</p>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-          <button class="btn ghost small" id="loadusers">Load / refresh users</button>
+        <p style="color:var(--muted);font-size:.9rem;margin-top:0">Everyone who has signed up. The list loads by itself whenever you open this page. "Make a reset code" emails them a code and shows it here, so you can read it out if their email is not working.</p>
+        <div class="userbar">
+          <input id="usearch" type="search" placeholder="Filter by name or email" autocomplete="off">
+          <select id="usort">
+            <option value="new">Newest first</option>
+            <option value="old">Oldest first</option>
+            <option value="name">Name A&ndash;Z</option>
+            <option value="email">Email A&ndash;Z</option>
+            <option value="active">Most attempts</option>
+          </select>
+          <button class="btn ghost small" id="loadusers">Refresh</button>
+          <button class="btn ghost small" id="copyemails" title="Copy every address shown">Copy addresses</button>
         </div>
+        <div id="userstat" class="userstat"></div>
         <div id="userlist"></div>
       </div>
       <div class="adminbox" style="margin-bottom:22px">
@@ -1947,7 +2001,7 @@ function renderSlide(id){
       (next?'<a class="btn ghost small" href="#/slide/'+encodeURIComponent(next.id)+'">Next slide</a>':'')+'</div>'+
     '<h2>'+esc(s.title)+'</h2><p class="muted">'+esc(s.desc||'')+'</p>'+
     '<div class="slidewrap"><div class="slidebox" id="slidebox">'+
-      '<img id="slideimg" src="'+esc(s.file)+'" alt="'+esc(s.title)+'">'+
+      '<img id="slideimg" src="'+esc(s.file)+'" alt="'+esc(s.title)+'" data-file="'+esc(s.file)+'">'+
       (s.hotspots||[]).map(function(h,i){
         return '<button class="hot'+(h.x>58?' flip':'')+'" data-i="'+i+'" style="left:'+h.x+'%;top:'+h.y+'%" title="'+esc(h.label)+'">'+
           '<span class="dot"></span><span class="hlab">'+esc(h.label)+'</span></button>';
@@ -1964,6 +2018,7 @@ function renderSlide(id){
     ((s.hotspots||[]).length?'<div class="chiprow" id="hotlist">'+s.hotspots.map(function(h,i){
         return '<button class="chip filter" data-i="'+i+'">'+esc(h.label)+'</button>';}).join('')+'</div>':'');
   var box=$('#slidebox');
+  imgGuard($('#slideimg'));
   function showHot(i){
     var h=s.hotspots[i];
     $$('#slidebox .hot').forEach(function(b,j){b.classList.toggle('on',j===i)});
@@ -1991,6 +2046,31 @@ function infoCard(key,inline){
     '<p style="margin:0"><b>Function:</b> '+esc(t.fn)+'</p></div>';
 }
 
+/* A slide image that will not load used to leave a thin white strip with the
+   markers floating on it, which looks like a broken page rather than a missing
+   file. Say plainly which file is missing instead. */
+function imgGuard(img){
+  if(!img||img.getAttribute('data-guarded'))return;
+  img.setAttribute('data-guarded','1');
+  function fail(){
+    var box=img.closest('.slidebox'); if(!box)return;
+    box.classList.add('imgmissing');
+    if(box.querySelector('.missnote'))return;
+    var f=img.getAttribute('data-file')||img.getAttribute('src')||'';
+    var d=document.createElement('div');
+    d.className='missnote';
+    d.innerHTML='<b>This slide image is not on the site.</b>'+
+      '<span class="mono">'+esc(f)+'</span>'+
+      '<span>Upload that file into the <b>histology</b> folder of the repository. '+
+      'If several slides show this, the folder was replaced instead of merged \u2014 '+
+      're-upload the full histology image set.</span>';
+    box.appendChild(d);
+    $$('.hot',box).forEach(function(h){h.style.display='none'});
+  }
+  img.addEventListener('error',fail);
+  if(img.complete&&img.naturalWidth===0)fail();
+}
+
 /* ---- histology quiz ---- */
 function renderHistoQuizSetup(){
   var box=$('#hqsections'); if(!box)return;
@@ -2006,7 +2086,8 @@ function renderHistoQuizSetup(){
   };
 }
 function hqPool(){
-  return allSlides().filter(function(s){return histoSel[s.section]!==false});
+  /* `noquiz` marks a plate whose own printed labels would give the answer away */
+  return allSlides().filter(function(s){return histoSel[s.section]!==false&&!s.noquiz});
 }
 function hqNext(){
   var pool=hqPool();
@@ -2031,13 +2112,14 @@ function hqNext(){
   var zoom=h?('--fx:'+h.x+'%;--fy:'+h.y+'%'):'';
   $('#hqbody').innerHTML=
     '<div class="slidebox quiz" style="'+zoom+'">'+
-      '<img src="'+esc(s.file)+'" alt="slide">'+
+      '<img src="'+esc(s.file)+'" alt="slide" data-file="'+esc(s.file)+'">'+
       (h?'<span class="hot on ring" style="left:'+h.x+'%;top:'+h.y+'%"><span class="dot"></span></span>':'')+
     '</div>'+
     '<p class="qtextq">'+(h?'What is the highlighted structure?':'What does this slide show?')+'</p>'+
     '<div class="opts" id="hqopts">'+opts.map(function(o,i){
       return '<button class="opt" data-o="'+i+'"><span class="k">'+"ABCD"[i]+'</span><span>'+esc(o)+'</span></button>';}).join('')+'</div>'+
     '<div id="hqfb"></div>';
+  imgGuard($('#hqbody img'));
   $$('#hqopts .opt').forEach(function(b){
     b.addEventListener('click',function(){hqAnswer(parseInt(b.getAttribute('data-o'),10))});
   });
@@ -2597,8 +2679,10 @@ function fcHistoTopics(){
     if(!bySec[id]){bySec[id]={id:id,t:(id==='terms'?'Terms & definitions':sectionName(id)),cards:[]};order.push(id)}
     return bySec[id];
   }
-  /* one identification card per visible slide */
+  /* one identification card per visible slide, skipping the plates whose own
+     printed labels already answer the question */
   slides.forEach(function(s){
+    if(s.noquiz)return;
     var g=sec(s.section);
     g.cards.push({id:'hi_'+fcHash('slide:'+s.id),
       q:'Identify this slide and say what you are looking at.',
@@ -3258,7 +3342,29 @@ var PHYSQ=[
  ["During bladder filling, which autonomic arrangement keeps urine in?",["Sympathetic \u03b2\u2082 relaxes the detrusor while \u03b1\u2081 contracts the internal sphincter","Parasympathetic muscarinic receptors relax the detrusor and contract the sphincter","Sympathetic \u03b1\u2081 relaxes the detrusor while \u03b2\u2082 contracts the sphincter","Parasympathetic fibres contract the detrusor and relax the sphincter"],0,"Micturition is the parasympathetic reflex, contracting the detrusor and relaxing the internal sphincter, with voluntary relaxation of the external sphincter by the pudendal nerve."],
  ["When blood pressure falls, the brainstem vasomotor centres respond by",["Raising sympathetic and lowering parasympathetic outflow","Raising both sympathetic and parasympathetic outflow simultaneously","decreasing sympathetic outflow and increasing parasympathetic outflow","increasing parasympathetic outflow to the SA node alone"],0,"\u03b2\u2081 stimulation raises rate and contractility while \u03b1\u2081 stimulation constricts vessels, and withdrawing vagal tone lets the rate rise further."],
  ["Small intensely fluorescent cells within sympathetic ganglia",["Are dopaminergic interneurons, mostly inhibitory","Are postganglionic neurons that release norepinephrine at the effector","are chromaffin cells releasing epinephrine","are sensory neurons carrying visceral pain"],0,"They modulate transmission through the ganglion rather than projecting to an effector organ."],
- ["Autonomic neuroeffector junctions differ from the neuromuscular junction because",["Release is from varicosities, with receptors spread widely","Release is from one discrete terminal onto a specialized motor end plate","they use nicotinic receptors on a specialized end plate","each target cell is innervated by exactly one postganglionic neuron"],0,"The branching networks also overlap, so one target tissue may receive input from many postganglionic neurons."]
+ ["Autonomic neuroeffector junctions differ from the neuromuscular junction because",["Release is from varicosities, with receptors spread widely","Release is from one discrete terminal onto a specialized motor end plate","they use nicotinic receptors on a specialized end plate","each target cell is innervated by exactly one postganglionic neuron"],0,"The branching networks also overlap, so one target tissue may receive input from many postganglionic neurons."],
+ ["Which three structures travel together in a portal tract?",["Bile ductule, portal venule and hepatic arteriole","Bile ductule, central vein and hepatic arteriole","Portal venule, central vein and lymphatic vessel","Hepatic arteriole, central vein and bile canaliculus"],0,"A lymphatic vessel also runs with them. The central vein is the other end of the circuit \u2014 it sits in the middle of the lobule, not at its corners."],
+ ["In the liver, blood and bile travel",["in opposite directions","in the same direction, toward the central vein","in the same direction, toward the portal triad","in opposite directions, with bile moving toward the central vein"],0,"Blood runs from the portal triads at the perimeter inward to the central vein; bile runs from the canaliculi outward to the bile ductule in the triad."],
+ ["Which lobule concept is built around blood supply?",["The classic lobule","The portal lobule","The hepatic acinus","The limiting plate"],0,"Its central axis is the central vein and its corners are the portal triads. The portal lobule is built around exocrine secretion, and the acinus around nutritional supply."],
+ ["The central axis of a portal lobule is",["the bile ductule of a portal triad","a central vein, with triads at the corners","a terminal branch of the hepatic artery","the limiting plate of hepatocytes"],0,"It forms a triangle with the central veins of three classic lobules at its corners, grouping the hepatocytes whose bile drains into the same duct."],
+ ["Which lobule concept best explains the pathology and regeneration seen in the liver?",["The acinar lobule","The classic lobule","The portal lobule","The hepatic plate"],0,"It is built on nutritional supply, with its central axis the terminal branches of the vessels and ductules, so it tracks the oxygen and nutrient gradient that damage follows."],
+ ["A Kupffer cell is best described as",["a macrophage of the sinusoidal lining","a vitamin A-storing cell in the space of Disse","the cell that lines the bile canaliculus and secretes bile","a fenestrated endothelial cell of the hepatic sinusoid"],0,"The vitamin A storer is the hepatic stellate (perisinusoidal, Ito) cell, which sits in the space of Disse and turns into a collagen-producing myofibroblast in cirrhosis."],
+ ["The perisinusoidal space of Disse lies between",["the sinusoidal lining and the hepatocyte","two adjacent hepatocytes, sealed by tight junctions","the limiting plate and the portal triad","the central vein and the hepatic plate"],0,"The space sealed between two hepatocytes is the bile canaliculus. Plasma reaches the space of Disse through the fenestrations, but blood cells do not."],
+ ["A bile canaliculus is",["a trench sealed between two hepatocytes","a small duct lined by simple cuboidal epithelium","a branch of the sinusoid carrying bile to the triad","the terminal ductule crossing the limiting plate"],0,"Small hepatocyte microvilli extend into it. The terminal ductule crossing the limiting plate is the canal of Hering, and the cuboidal-lined duct is the bile ductule of the triad."],
+ ["Bile leaving the canaliculi passes next into",["cholangioles, then the canal of Hering","the central vein, then the hepatic veins","the space of Disse, then the lymphatics","the hepatic sinusoid, then the portal venule"],0,"From the canal of Hering it crosses the limiting plate into the bile duct of the portal space. Nothing about bile drainage involves the venous side."],
+ ["Which features identify the gall bladder rather than the jejunum?",["No goblet cells and no muscularis mucosae","Goblet cells present but no muscularis mucosae","True villi with a core of submucosa","A muscularis mucosae with glands throughout"],0,"The gall bladder mucosa folds into arches that can be mistaken for villi, but it has no goblet cells, no muscularis mucosae and therefore no true submucosa, and no glands except at the neck."],
+ ["How does the gall bladder concentrate bile?",["Ions are pumped out and water follows them","Water is pumped out directly by an apical ATPase pump","Bile salts are actively reabsorbed, leaving water behind","Mucus is added to the bile, raising its solute content"],0,"Na\u207a, HCO\u2083\u207b and Cl\u207b are actively transported into the space between the highly folded lateral membranes; water follows the osmotic gradient and hydrostatic pressure then drives it into the lamina propria, where fenestrated capillaries take it up."],
+ ["What triggers the gall bladder to deliver bile to the duodenum?",["Cholecystokinin, released when fat arrives","Secretin, released when acid reaches the duodenum","Gastrin released when the stomach distends","Somatostatin released from the pancreatic islets"],0,"CCK makes the smooth muscle of the gall bladder contract; bile then travels by the cystic and common bile ducts and enters the duodenum through the ampulla of Vater."],
+ ["Which single feature separates the pancreas from the submandibular gland in a section?",["The pancreas has no striated ducts","The pancreas has no serous acini","The pancreas has no intercalated ducts","The pancreas contains no adipose tissue"],0,"Both are predominantly serous and look much alike. The submandibular gland has many striated ducts; the pancreas has none, and it has centroacinar cells, which the salivary glands lack."],
+ ["Why is the lumen of a pancreatic acinus so hard to see?",["Centroacinar duct cells are thrust into it","Zymogen granules fill it completely","The acinus has no lumen at all","Myoepithelial cells collapse it during fixation"],0,"The centroacinar cell is the start of the intercalated duct pushed into the acinus, recognised by its central position and pale cytoplasm."],
+ ["Centroacinar and other intercalated duct cells of the pancreas secrete",["bicarbonate, and are stimulated by secretin","bicarbonate, and are stimulated by cholecystokinin","digestive enzymes, and are stimulated by secretin","digestive enzymes, and are stimulated by gastrin"],0,"The division of labour is worth memorising: acinar cells make the enzymes and answer to CCK; duct cells make the bicarbonate and answer to secretin."],
+ ["Pancreatic acinar cells secrete",["trypsinogen, amylase, lipase and nucleases","bicarbonate, amylase, lysozyme and secretory IgA alone","insulin, glucagon and somatostatin","pepsinogen, gastric lipase and intrinsic factor"],0,"They are stimulated by cholecystokinin. Amylase, lysozyme and secretory IgA are the contents of saliva, and pepsinogen and intrinsic factor belong to the stomach."],
+ ["Match the islet cell with its product.",["Alpha glucagon, beta insulin, delta somatostatin","Alpha insulin, beta glucagon, delta somatostatin","Alpha somatostatin, beta insulin, delta glucagon","Alpha glucagon, beta somatostatin, delta insulin"],0,"Glucagon raises blood sugar, insulin reduces it, and somatostatin regulates the other two."],
+ ["Which salivary gland is completely serous?",["Parotid","Submandibular","Sublingual","All three are mixed"],0,"It also has many striated ducts and may include adipose tissue. The submandibular is mixed but predominantly serous; the sublingual is almost completely mucous with few ducts."],
+ ["The striations at the base of a striated duct cell are",["membrane infoldings packed with mitochondria","bundles of actin filaments anchoring the cell","stacks of rough endoplasmic reticulum","rows of secretory granules awaiting release"],0,"The mitochondria supply the ATP for the active transport that concentrates the saliva."],
+ ["Saliva contains",["amylase, lysozyme and secretory IgA","amylase, lipase and intrinsic factor","lysozyme, pepsinogen and bicarbonate","trypsinogen, amylase and secretory IgA"],0,"Lysozyme is antibacterial and secretory IgA is the immune component. Pepsinogen belongs to the stomach and trypsinogen to the pancreas."],
+ ["Which of these is an exocrine function of the liver?",["Formation of bile","Synthesis of albumin and fibrinogen","Storage of vitamin A","Deamination of amino acids in the urea cycle"],0,"The lecture lists bile formation as the exocrine function; protein synthesis is given as the endocrine one, with detoxification, lipid and carbohydrate metabolism, the urea cycle and vitamin A storage alongside."],
+ ["The afferent blood supply of the liver comes from",["the hepatic portal vein and hepatic artery","the hepatic artery and the hepatic veins only","the hepatic portal vein and the central veins","the sinusoids and the hepatic veins"],0,"Within the liver that blood passes through the sinusoids to the central veins, and the hepatic veins are the efferent vessels leaving the organ."]
 ];
 var CQ={bio:{bank:BIOQ,score:{n:0,r:0},q:null,bag:null,last:-1},phys:{bank:PHYSQ,score:{n:0,r:0},q:null,bag:null,last:-1}};
 /* Shuffled-bag picker: every question in the bank is shown once, in random order,
@@ -3704,44 +3810,246 @@ function pushProgress(examId,state,attempt,clear){
 }
 
 /* ================= ADMIN: users ================= */
-function renderUserAdmin(){
-  var box=$('#userlist'); if(!box)return;
-  box.innerHTML='<p class="muted" style="margin:0">Loading\u2026</p>';
-  apiPost({action:'users'}).then(function(j){
-    var us=j.users||[];
-    if(!us.length){box.innerHTML='<p class="muted" style="margin:0">Nobody has made an account yet.</p>';return;}
-    box.innerHTML=us.map(function(u){
-      return '<div class="adminrow" style="flex-wrap:wrap">'+
-        '<b>'+esc(u.name||u.email.split('@')[0])+'</b>'+
-        '<span class="statepill">'+esc(u.email)+'</span>'+
-        '<span class="statepill">'+u.attempts+' attempt'+(u.attempts===1?'':'s')+'</span>'+
-        (u.hasReset?'<span class="statepill prog">reset pending</span>':'')+
-        '<button class="btn ghost small" data-ureset="'+esc(u.email)+'">Make a reset code</button>'+
-        '<button class="btn danger small" data-udel="'+esc(u.email)+'">Delete</button>'+
-        ((u.exams||[]).length?'<div style="flex-basis:100%;font-size:.82rem;color:var(--muted);margin-top:4px">'+
-          u.exams.map(function(x){
-            var ex=allItems().filter(function(i){return i.id===x.examId})[0];
-            return esc(ex?ex.title:x.examId)+' \u2014 '+x.attempts+' attempt'+(x.attempts===1?'':'s')+(x.last?', last '+esc(x.last):'');
-          }).join(' &middot; ')+'</div>':'')+
-        '</div>';
-    }).join('');
-  }).catch(function(e){box.innerHTML='<p class="msg err">Could not load users: '+esc(e.message)+'</p>'});
+var UA={list:[],loaded:false,loading:false,q:'',sort:'new',err:null};
+
+function when(iso){
+  if(!iso)return '';
+  var d=new Date(iso); if(isNaN(d))return '';
+  var days=Math.floor((Date.now()-d.getTime())/86400000);
+  if(days<=0)return 'today';
+  if(days===1)return 'yesterday';
+  if(days<30)return days+' days ago';
+  if(days<365)return Math.round(days/30)+' months ago';
+  return Math.round(days/365)+' years ago';
 }
-document.addEventListener('click',function(e){
-  var t=e.target; if(!t||!t.getAttribute)return;
-  var r=t.getAttribute('data-ureset');
-  if(r){
-    if(!confirm('Create a reset code for '+r+'? It is emailed to them and shown to you.'))return;
-    apiPost({action:'adminReset',email:r}).then(function(j){
-      alert('Reset code for '+r+': '+j.code+'\n\nIt was emailed to them as well and is valid for 24 hours. They enter it under Forgot password with a new password.');
-      renderUserAdmin();
-    }).catch(function(err){alert(err.message)});
+function stamp(iso){
+  if(!iso)return '—';
+  var d=new Date(iso); if(isNaN(d))return '—';
+  return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});
+}
+function leftFor(ms){
+  var m=Math.round((ms-Date.now())/60000);
+  if(m<=0)return 'expired';
+  if(m<60)return m+' min left';
+  return Math.round(m/60)+' h left';
+}
+
+/* Tell the owner exactly which of the four things is wrong, and let the two
+   fixable ones be fixed right here rather than somewhere else in the panel. */
+function userAdminProblem(msg){
+  var a=api(), url=a.url||'(none saved)';
+  var m=String(msg||'');
+  var wrongKey=/admin key/i.test(m);
+  var oldBackend=/unknown action/i.test(m);
+  var noUrl=/no backend url/i.test(m);
+  var net=/failed to fetch|load failed|networkerror|unexpected token|json/i.test(m);
+  var h='<div class="userprob"><h4>The user list could not be loaded</h4>';
+  if(wrongKey){
+    h+='<p>The backend answered, so the site is connected — but the <b>admin key</b> saved in '+
+       '<i>this browser</i> is wrong or missing.</p>'+
+       '<p class="fine">The key is stored per browser, so a phone or a second laptop will not have it '+
+       'until you paste it there once. It is the <code>ADMIN_KEY</code> line at the top of Code.gs.</p>'+
+       '<div class="keyfix"><input id="ukey" type="text" placeholder="Paste the admin key" autocomplete="off">'+
+       '<button class="btn primary small" id="ukeysave">Save key and retry</button></div>';
+  } else if(oldBackend){
+    h+='<p>The site reached your Apps Script, but that deployment is an <b>older version of Code.gs</b> '+
+       'that has no user list in it.</p>'+
+       '<p class="fine">Paste the current Code.gs into the Apps Script editor, then '+
+       '<b>Deploy → Manage deployments → pencil icon → Version: New version → Deploy</b>. '+
+       'Editing the code alone is not enough — the live deployment keeps serving the old version until '+
+       'you publish a new one.</p>';
+  } else if(noUrl){
+    h+='<p>No backend URL is saved, so there is nothing to ask.</p>'+
+       '<p class="fine">Paste your Apps Script <code>/exec</code> URL into the connection box further down this page.</p>';
+  } else if(net){
+    h+='<p>The site could not reach the backend at all.</p>'+
+       '<p class="fine">Check, in order: the URL ends in <code>/exec</code> and not <code>/dev</code>; '+
+       'the deployment is set to <b>Execute as: Me</b> and <b>Who has access: Anyone</b>; '+
+       'and you have deployed at least once since the last code change.</p>';
+  } else {
+    h+='<p>'+esc(m)+'</p>';
+  }
+  var saved=false; try{saved=!!(JSON.parse(localStorage.getItem(APIK)||'{}').url)}catch(e){}
+  h+='<p class="fine">Backend in use: <span class="mono">'+esc(url)+'</span>'+
+     (saved?'':' <i>(the address built into index.html \u2014 nothing saved in this browser)</i>')+'</p>'+
+     '<div class="nav" style="gap:8px;margin-top:10px"><button class="btn ghost small" id="uretry">Try again</button>'+
+     '<button class="btn ghost small" id="uping">Test the connection</button></div></div>';
+  return h;
+}
+
+function renderUserAdmin(force){
+  var box=$('#userlist'); if(!box)return;
+  wireUserAdmin();                 /* so the controls work however we got here */
+  if(UA.loading)return;
+  if(UA.loaded&&!force){drawUsers();return;}
+  UA.loading=true; UA.err=null;
+  var stat=$('#userstat'); if(stat)stat.textContent='';
+  box.innerHTML='<p class="muted" style="margin:0">Loading the account list…</p>';
+  apiPost({action:'users'}).then(function(j){
+    UA.loading=false; UA.loaded=true;
+    UA.list=j.users||[];
+    UA.version=j.version||0;
+    drawUsers();
+  }).catch(function(e){
+    UA.loading=false; UA.loaded=false; UA.err=e.message;
+    box.innerHTML=userAdminProblem(e.message);
+    var k=$('#ukeysave');
+    if(k)k.onclick=function(){
+      var v=($('#ukey').value||'').trim();
+      if(!v){alert('Paste the key first.');return;}
+      var a=api(); setApi({url:a.url||'',key:v});
+      renderUserAdmin(true);
+    };
+    var rt=$('#uretry'); if(rt)rt.onclick=function(){renderUserAdmin(true)};
+    var pg=$('#uping'); if(pg)pg.onclick=function(){
+      pg.disabled=true; pg.textContent='Testing…';
+      apiPost({action:'ping'}).then(function(j){
+        alert('Connected.\n\nBackend: '+(j.site||'?')+'\nCode.gs version: '+(j.version||'older than 4')+
+              '\nAccounts on record: '+(typeof j.users==='number'?j.users:'?')+
+              '\n\nThe key and the URL are both correct.');
+      }).catch(function(err){
+        alert('Still failing: '+err.message+
+              (/unknown action/i.test(err.message)
+                ? '\n\nThat answer means the deployment is running an older Code.gs. Paste the new one and deploy a NEW VERSION.'
+                : ''));
+      }).then(function(){pg.disabled=false;pg.textContent='Test the connection'});
+    };
+  });
+}
+
+function usersShown(){
+  var q=UA.q.trim().toLowerCase();
+  var out=UA.list.filter(function(u){
+    if(!q)return true;
+    return (u.email||'').toLowerCase().indexOf(q)>=0||(u.name||'').toLowerCase().indexOf(q)>=0;
+  });
+  var by=UA.sort;
+  out.sort(function(a,b){
+    if(by==='name')return (a.name||a.email||'').localeCompare(b.name||b.email||'');
+    if(by==='email')return (a.email||'').localeCompare(b.email||'');
+    if(by==='active')return (b.attempts||0)-(a.attempts||0);
+    if(by==='old')return (a.created||'').localeCompare(b.created||'');
+    return (b.created||'').localeCompare(a.created||'');
+  });
+  return out;
+}
+
+function drawUsers(){
+  var box=$('#userlist'); if(!box)return;
+  var all=UA.list, shown=usersShown();
+  var stat=$('#userstat');
+  if(stat){
+    var pend=all.filter(function(u){return u.hasReset}).length;
+    stat.innerHTML='<b>'+all.length+'</b> account'+(all.length===1?'':'s')+
+      (shown.length!==all.length?' &middot; showing '+shown.length:'')+
+      (pend?' &middot; <span class="warn">'+pend+' reset code pending</span>':'')+
+      (UA.version?'':' &middot; <span class="warn">your Apps Script is an older version — some details are missing</span>');
+  }
+  if(!all.length){
+    box.innerHTML='<p class="muted" style="margin:0">The backend answered, and there are no accounts on it yet. '+
+      'The first person to sign up will appear here.</p>';
     return;
   }
+  if(!shown.length){box.innerHTML='<p class="muted" style="margin:0">Nobody matches that search.</p>';return;}
+  box.innerHTML=shown.map(function(u){
+    var em=u.email||'', nm=u.name||em.split('@')[0];
+    var r=u.reset;
+    return '<div class="urow">'+
+      '<div class="uhead">'+
+        '<b>'+esc(nm)+'</b>'+
+        '<button class="umail" data-ucopy="'+esc(em)+'" title="Copy this address">'+esc(em)+'</button>'+
+        (u.signedIn?'<span class="statepill ok">signed in</span>':'')+
+        (u.hasReset?'<span class="statepill '+(r&&r.expired?'':'prog')+'">'+
+            (r&&r.expired?'reset code expired':'reset code pending')+'</span>':'')+
+      '</div>'+
+      '<div class="umeta">joined '+esc(stamp(u.created))+(when(u.created)?' ('+esc(when(u.created))+')':'')+
+        ' &middot; '+(u.attempts||0)+' exam attempt'+((u.attempts||0)===1?'':'s')+
+        (u.lastSeen?' &middot; last activity '+esc(when(u.lastSeen)):'')+'</div>'+
+      (r?'<div class="ureset">Current code <span class="mono big">'+esc(r.code)+'</span>'+
+         '<span class="fine">'+esc(r.expired?'expired — make a new one':leftFor(r.exp))+'</span>'+
+         '<button class="btn ghost small" data-ucopy="'+esc(r.code)+'">Copy code</button>'+
+         '<button class="btn ghost small" data-uclear="'+esc(em)+'">Cancel it</button></div>':'')+
+      ((u.exams||[]).length?'<div class="uexams">'+u.exams.map(function(x){
+          var ex=allItems().filter(function(i){return i.id===x.examId})[0];
+          return esc(ex?ex.title:x.examId)+' — '+x.attempts+' attempt'+(x.attempts===1?'':'s')+
+                 (x.last?', last '+esc(x.last):'');
+        }).join(' &middot; ')+'</div>':'')+
+      '<div class="uacts">'+
+        '<button class="btn ghost small" data-ureset="'+esc(em)+'">Make a reset code</button>'+
+        '<button class="btn ghost small" data-usignout="'+esc(em)+'">Sign out everywhere</button>'+
+        '<button class="btn danger small" data-udel="'+esc(em)+'">Delete</button>'+
+      '</div></div>';
+  }).join('');
+}
+
+function wireUserAdmin(){
+  var se=$('#usearch');
+  if(se&&!se.getAttribute('data-wired')){
+    se.setAttribute('data-wired','1');
+    se.oninput=function(){UA.q=se.value;if(UA.loaded)drawUsers()};
+  }
+  var so=$('#usort');
+  if(so&&!so.getAttribute('data-wired')){
+    so.setAttribute('data-wired','1');
+    so.onchange=function(){UA.sort=so.value;if(UA.loaded)drawUsers()};
+  }
+  var ce=$('#copyemails');
+  if(ce&&!ce.getAttribute('data-wired')){
+    ce.setAttribute('data-wired','1');
+    ce.onclick=function(){
+      var list=usersShown().map(function(u){return u.email}).filter(Boolean).join(', ');
+      if(!list){alert('No addresses to copy yet.');return;}
+      copyText(list,ce,'Copy addresses');
+    };
+  }
+  var lu=$('#loadusers');
+  if(lu)lu.onclick=function(){renderUserAdmin(true)};
+}
+function copyText(t,btn,back){
+  function done(){ if(btn){var o=btn.textContent;btn.textContent='Copied';setTimeout(function(){btn.textContent=back||o},1200);} }
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(t).then(done,function(){window.prompt('Copy this:',t)});
+  } else window.prompt('Copy this:',t);
+}
+
+document.addEventListener('click',function(e){
+  var t=e.target; if(!t||!t.getAttribute)return;
+
+  var cp=t.getAttribute('data-ucopy');
+  if(cp){copyText(cp,t.classList.contains('umail')?null:t);return;}
+
+  var r=t.getAttribute('data-ureset');
+  if(r){
+    if(!confirm('Create a reset code for '+r+'? It is emailed to them and shown here.'))return;
+    t.disabled=true;
+    apiPost({action:'adminReset',email:r}).then(function(j){
+      alert('Reset code for '+r+': '+j.code+'\n\nIt was emailed to them as well and is valid for 24 hours. '+
+            'They enter it under Forgot password together with a new password.');
+      renderUserAdmin(true);
+    }).catch(function(err){t.disabled=false;alert(err.message)});
+    return;
+  }
+
+  var cl=t.getAttribute('data-uclear');
+  if(cl){
+    apiPost({action:'clearReset',email:cl}).then(function(){renderUserAdmin(true)})
+      .catch(function(err){alert(err.message)});
+    return;
+  }
+
+  var so=t.getAttribute('data-usignout');
+  if(so){
+    if(!confirm('Sign '+so+' out on every device? Their account and progress are kept — they just have to sign in again.'))return;
+    apiPost({action:'signOutUser',email:so}).then(function(){renderUserAdmin(true)})
+      .catch(function(err){alert(err.message)});
+    return;
+  }
+
   var dl=t.getAttribute('data-udel');
   if(dl){
-    if(!confirm('Delete the account for '+dl+' and all of its saved attempts?'))return;
-    apiPost({action:'deleteUser',email:dl}).then(renderUserAdmin).catch(function(err){alert(err.message)});
+    if(!confirm('Delete the account for '+dl+', with its saved attempts and flashcard progress? This cannot be undone.'))return;
+    apiPost({action:'deleteUser',email:dl}).then(function(){renderUserAdmin(true)})
+      .catch(function(err){alert(err.message)});
   }
 });
 
@@ -3806,8 +4114,7 @@ function route(){
   if(name==='flashstudy')renderFlashStudy();
   if(name==='anim')openAnim(r[1]);
   if(name!=='anim')stopAnim();
-  if(name==='admin'){renderSlideAdmin();renderItemAdmin();
-    if($('#loadusers'))$('#loadusers').onclick=renderUserAdmin;}
+  if(name==='admin'){renderSlideAdmin();renderItemAdmin();wireUserAdmin();renderUserAdmin();}
   if(name==='exams')renderExams();
   if(name==='exam')openExam(r[1]);
   if(name!=='exam'&&sniffTimer){clearInterval(sniffTimer);sniffTimer=null;
