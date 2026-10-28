@@ -1796,7 +1796,10 @@ function pullRemote(){
     renderList();renderExams();renderAdminList();applyFeatures();
     if(typeof renderItemAdmin==='function')renderItemAdmin();
     if(typeof renderMyAttempts==='function')renderMyAttempts();
-    var r=currentRoute()[0]; if(r==='post'||r==='exam'||r==='slide'||r==='histosection'||r==='histology')route();
+    /* Re-rendering the page the visitor is on is fine for a document or a
+       slide, but never for an exam: that would rebuild the frame and restart
+       the attempt. The exam list behind it has already been refreshed above. */
+    var r=currentRoute()[0]; if(r==='post'||r==='slide'||r==='histosection'||r==='histology')route();
   }).catch(function(){});
 }
 useCache();
@@ -1996,6 +1999,13 @@ function restoreExamState(examId){
 function syncExamState(examId){
   var s=readExamState(examId);
   if(s==='{}'||lastPushed[examId]===s)return;
+  /* A frame that has only just loaded holds less than what is already saved.
+     Pushing that would overwrite a real attempt with an empty one, so it waits
+     until the frame has at least as much as the server already has. */
+  try{
+    var saved=(progressAll()[examId]||{}).state;
+    if(saved && saved.length > s.length) return;
+  }catch(e){}
   lastPushed[examId]=s;
   pushProgress(examId,s,null);
 }
@@ -2109,26 +2119,53 @@ function examShim(examId){
   '})();</scr'+'ipt>'+
   '<scr'+'ipt>('+examRevealPatch.toString()+')();</scr'+'ipt>';
 }
-function openExam(id){
+/* Identifies what is currently loaded in the exam frame, so the frame is never
+   rebuilt underneath a student who is part-way through an attempt. */
+var mountedExam=null;
+function examSig(s){var h=0;for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return s.length+':'+h;}
+function examFrameLive(fr){
+  try{ return !!(fr && fr.contentDocument && fr.contentDocument.getElementById('exam')); }
+  catch(e){ return !!(fr && fr.getAttribute('srcdoc')); }
+}
+function openExam(id,force){
   var p=exams().filter(function(x){return x.id===id})[0];
   var fr=$('#examframe');
-  if(!p){$('#examtitle').textContent='Exam not found';fr.removeAttribute('srcdoc');return;}
+  if(!p){$('#examtitle').textContent='Exam not found';fr.removeAttribute('srcdoc');mountedExam=null;return;}
   $('#examtitle').textContent=p.title;
   var l=learner();
   $('#examwho').textContent='Answers saved for: '+(l.name||'this device');
   $('#examnote').textContent='Your answers save automatically. Leave and come back any time \u2014 nobody else sees your attempt, and other people can sit the same exam at the same moment.';
   var code=p.code||'';
+  var sig=examSig(code);
+
+  /* Already open, unchanged, and still running? Then leave the attempt exactly
+     where it is. Reloading the frame here is what used to wipe the page back to
+     question one whenever the tab regained focus. */
+  if(!force && mountedExam && mountedExam.id===p.id && mountedExam.sig===sig && examFrameLive(fr)){
+    if(!stateTimer)stateTimer=setInterval(function(){syncExamState(p.id)},8000);
+    if(!sniffTimer)startExamSniffer(p,fr);
+    bindExamButtons(p,fr,code);
+    return;
+  }
+
   restoreExamState(p.id);
   fr.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads');
   fr.srcdoc=examShim(p.id)+code;
+  mountedExam={id:p.id,sig:sig};
   if(stateTimer)clearInterval(stateTimer);
   stateTimer=setInterval(function(){syncExamState(p.id)},8000);
+  bindExamButtons(p,fr,code);
+  startExamSniffer(p,fr);
+}
+function bindExamButtons(p,fr,code){
   $('#examreset').onclick=function(){ if(!confirm('Clear your own answers for this exam?'))return; clearExam(p.id);
-    pushProgress(p.id,null,null,true); fr.srcdoc=examShim(p.id)+code; renderExams(); };
+    pushProgress(p.id,null,null,true); lastPushed[p.id]=null; mountedExam=null; openExam(p.id,true); renderExams(); };
   $('#examfull').onclick=function(){
     if(fr.requestFullscreen)fr.requestFullscreen();
     else openFile({name:p.title+'.html',type:'text/html',data:'data:text/html;charset=utf-8,'+encodeURIComponent(code)});
   };
+}
+function startExamSniffer(p,fr){
   if(sniffTimer)clearInterval(sniffTimer);
   sniffTimer=setInterval(function(){
     try{
@@ -4904,7 +4941,8 @@ function route(){
   if(name==='exam')openExam(r[1]);
   if(name!=='exam'&&sniffTimer){clearInterval(sniffTimer);sniffTimer=null;
     if(stateTimer){clearInterval(stateTimer);stateTimer=null;}
-    var ef=$('#examframe');if(ef)ef.removeAttribute('srcdoc');}
+    var ef=$('#examframe');if(ef)ef.removeAttribute('srcdoc');
+    mountedExam=null;}
   if(name==='admin'){var a=api();$('#apiurl').value=a.url||'';$('#apikey').value=a.key||'';}
   var known={home:1,cycles:1,clinical:1,post:1,login:1,admin:1,exams:1,exam:1,account:1,histology:1,histosection:1,slide:1,histoquiz:1,physiology:1,anim:1,bioquiz:1,physioquiz:1,flashcards:1,flashstudy:1};
   if(!known[name])name='home';
@@ -4946,6 +4984,8 @@ if(!fitted)setTimeout(function(){if(MAPREADY&&viewer.clientWidth&&!fitted)fit();
   var shown=false;
   navigator.serviceWorker.addEventListener('message',function(e){
     if(!e.data||e.data.sw!=='refreshed'||shown)return;
+    /* never invite a reload while someone is part-way through an exam */
+    if(currentRoute()[0]==='exam'&&mountedExam)return;
     shown=true;
     var t=document.getElementById('swtoast'); if(!t)return;
     t.classList.add('on');
@@ -4968,8 +5008,13 @@ if(!fitted)setTimeout(function(){if(MAPREADY&&viewer.clientWidth&&!fitted)fit();
    on another device shows up without anyone reloading anything. */
 (function(){
   var last=Date.now();
+  function midExam(){
+    return currentRoute()[0]==='exam' && mountedExam && examFrameLive($('#examframe'));
+  }
   function fresh(){
     if(document.hidden)return;
+    /* never poke the backend while someone is sitting an exam */
+    if(midExam())return;
     if(Date.now()-last < 20000)return;
     last=Date.now(); pullRemote();
   }
