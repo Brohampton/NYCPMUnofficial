@@ -1765,7 +1765,7 @@ window.addEventListener('resize',function(){clamp();apply();});
 /* ================= CONFIG ================= */
 /* Paste your Google Apps Script web-app URL between the quotes to publish for everyone.
    You can also set it from the Admin panel on your own device. */
-var API_URL = "https://script.google.com/macros/s/AKfycbytu1gHZd_gNU1y7oZ-R_KBV_26xd60sn5MFxC_Uh__xCgcmayODf-9WTTvYyl0x0Ux/exec";
+var API_URL = "https://script.google.com/macros/s/AKfycbwuh9qaPIO2_hRQIzxzk_UlQOI_bdPE-tJaxXfUp8N4velFeqX5Rals76FppTD4W5pr/exec";
 
 /* ---------------- auth ---------------- */
 var ADMIN_EMAIL='brodielol856@gmail.com';
@@ -1867,6 +1867,58 @@ function apiGet(){
   return fetch(u+(u.indexOf('?')>-1?'&':'?')+'action=list&t='+Date.now(),{cache:'no-store'})
     .then(function(r){return r.json()});
 }
+/* The full list carries the entire HTML of every interactive exam — by far the
+   largest thing this site downloads, and more than a browser will keep in its
+   local cache once there are a few dozen papers. The lean list is the same
+   thing without those bodies; each paper's HTML is then fetched only when
+   somebody actually opens it. A backend that predates this just answers with
+   the full list, which works exactly as before. */
+function apiGetLean(){
+  var u=api().url; if(!u) return Promise.resolve(null);
+  return fetch(u+(u.indexOf('?')>-1?'&':'?')+'action=lean&t='+Date.now(),{cache:'no-store'})
+    .then(function(r){return r.json()})
+    .then(function(j){
+      if(j&&!j.error&&Array.isArray(j.items))return j;
+      return apiGet();                       /* older backend */
+    })
+    .catch(function(){return apiGet()});
+}
+var codeFetching={};
+function applyFetchedCode(id,item){
+  if(!item||!item.code)return;
+  var found=false;
+  remoteItems=remoteItems.map(function(p){
+    if(p.id!==id)return p;
+    found=true;
+    var c={}; for(var k in p)c[k]=p[k]; c.code=item.code; return c;
+  });
+  if(!found)remoteItems=remoteItems.concat([item]);
+}
+/* fetch one paper's HTML on demand; resolves true when it is in hand */
+function fetchItemCode(id){
+  if(codeFetching[id])return codeFetching[id];
+  var a=api();
+  if(!a.url)return Promise.resolve(false);
+  var u=a.url+(a.url.indexOf('?')>-1?'&':'?')+'action=item&id='+encodeURIComponent(id)+'&t='+Date.now();
+  var pr=fetch(u,{cache:'no-store'})
+    .then(function(r){return r.json()})
+    .then(function(j){
+      if(j&&j.ok&&j.item&&j.item.code){applyFetchedCode(id,j.item);return true}
+      throw new Error('no item');
+    })
+    .catch(function(){
+      /* older backend, or a one-off failure: fall back to the full list */
+      return apiGet().then(function(j){
+        var arr=(j&&(j.items||j.posts))||[];
+        var hit=arr.filter(function(x){return x.id===id})[0];
+        if(hit&&hit.code){applyFetchedCode(id,hit);return true}
+        return false;
+      }).catch(function(){return false});
+    })
+    .then(function(ok){delete codeFetching[id];return ok});
+  codeFetching[id]=pr;
+  return pr;
+}
 function apiPost(payload){
   var a=api(); if(!a.url) return Promise.reject(new Error('No backend URL saved.'));
   payload.key=a.key||'';
@@ -1922,10 +1974,18 @@ function writeCache(){
   }catch(e){}
 }
 function pullRemote(){
-  return apiGet().then(function(j){
+  return apiGetLean().then(function(j){
     if(!j)return;
     var arr=j.items||j.posts||[];
-    if(Array.isArray(arr)){remoteItems=arr.map(function(p){if(!p.kind)p.kind='doc';return p});
+    if(Array.isArray(arr)){
+      /* keep any paper body already in hand, so switching to the lean list
+         never makes an exam that was open have to be fetched again */
+      var prev={}; remoteItems.forEach(function(p){if(p&&p.id)prev[p.id]=p});
+      remoteItems=arr.map(function(p){
+        if(!p.kind)p.kind='doc';
+        if(p.code===undefined&&prev[p.id]&&prev[p.id].code)p.code=prev[p.id].code;
+        return p;
+      });
       try{localStorage.setItem(CACHEK,JSON.stringify({items:arr,at:Date.now()}))}catch(e){}}
     dataSettled=true;
     renderList();renderExams();renderAdminList();applyFeatures();
@@ -1935,6 +1995,10 @@ function pullRemote(){
        slide, but never for an exam: that would rebuild the frame and restart
        the attempt. The exam list behind it has already been refreshed above. */
     var r=currentRoute()[0]; if(r==='post'||r==='slide'||r==='histosection'||r==='histology')route();
+    /* An exam opened before the list had arrived showed "Exam not found" and
+       stayed that way, because this is deliberately never re-routed. Retrying
+       is safe while nothing is mounted — there is no attempt to disturb. */
+    else if(r==='exam'&&!mountedExam)route();
   }).catch(function(){});
 }
 useCache();
@@ -2242,6 +2306,56 @@ function examRevealPatch(){
     if(!document.getElementById('start')||document.getElementById('start').classList.contains('hidden'))window.renderQ();
   });
 }
+/* Injected into every exam iframe. Reports the score to the site the instant
+   the paper finishes grading, instead of waiting for the two-second poll below
+   to notice it. Three independent triggers, because papers differ and a result
+   that is missed is a result the student loses:
+     1. the paper's own finish() is wrapped, so we hear about it first;
+     2. a MutationObserver watches the score line, for any other way it is set;
+     3. the original poll in startExamSniffer stays exactly as it was.
+   All three funnel into one reporter that ignores anything it has already sent,
+   so no attempt is ever recorded twice. */
+function examResultPatch(examId){
+  var sentKey='';
+  function report(){
+    try{
+      var p=document.getElementById('pct'), s=document.getElementById('scoreline');
+      if(!p||!s)return;
+      var score=String(p.textContent||'').trim(), detail=String(s.textContent||'').trim();
+      if(!detail)return;                       /* not graded yet */
+      var key=score+'|'+detail;
+      if(key===sentKey)return;
+      sentKey=key;
+      if(window.parent&&typeof window.parent.nycpmExamResult==='function')
+        window.parent.nycpmExamResult(examId,score,detail);
+    }catch(e){}
+  }
+  function ready(fn){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',fn);else fn();}
+  ready(function(){
+    try{
+      if(typeof window.finish==='function'){
+        var orig=window.finish;
+        window.finish=function(){
+          var r=orig.apply(this,arguments);
+          report();                 /* synchronous: the score is already written */
+          setTimeout(report,0);     /* and again, in case it is not */
+          return r;
+        };
+      }
+    }catch(e){}
+    try{
+      if(window.MutationObserver){
+        var opt={childList:true,characterData:true,subtree:true};
+        var s=document.getElementById('scoreline');
+        if(s)new MutationObserver(report).observe(s,opt);
+        var p=document.getElementById('pct');
+        if(p)new MutationObserver(report).observe(p,opt);
+      }
+    }catch(e){}
+    /* a paper reopened after it was already finished */
+    report();
+  });
+}
 function examShim(examId){
   var P=examPrefix(examId);
   return '<scr'+'ipt>(function(){var P='+JSON.stringify(P)+';var back=null;try{back=window.parent.localStorage}catch(e){}'+
@@ -2252,7 +2366,8 @@ function examShim(examId){
   'try{Object.defineProperty(window,"localStorage",{configurable:true,get:function(){return shim}})}catch(e){}'+
   'try{Object.defineProperty(window,"sessionStorage",{configurable:true,get:function(){return shim}})}catch(e){}'+
   '})();</scr'+'ipt>'+
-  '<scr'+'ipt>('+examRevealPatch.toString()+')();</scr'+'ipt>';
+  '<scr'+'ipt>('+examRevealPatch.toString()+')();</scr'+'ipt>'+
+  '<scr'+'ipt>('+examResultPatch.toString()+')('+JSON.stringify(examId)+');</scr'+'ipt>';
 }
 /* Identifies what is currently loaded in the exam frame, so the frame is never
    rebuilt underneath a student who is part-way through an attempt. */
@@ -2266,6 +2381,17 @@ function openExam(id,force){
   var p=exams().filter(function(x){return x.id===id})[0];
   var fr=$('#examframe');
   if(!p){$('#examtitle').textContent='Exam not found';fr.removeAttribute('srcdoc');mountedExam=null;return;}
+  /* the list no longer ships every paper's HTML; fetch this one, then carry on */
+  if(!p.code&&p.hasCode){
+    $('#examtitle').textContent=p.title;
+    if($('#examnote'))$('#examnote').textContent='Opening this paper…';
+    fetchItemCode(p.id).then(function(ok){
+      if(ok){openExam(id,force);return;}
+      if($('#examnote'))$('#examnote').textContent=
+        'This paper could not be loaded just now. Check your connection and reopen it — nothing you have already answered is lost.';
+    });
+    return;
+  }
   $('#examtitle').textContent=p.title;
   var l=learner();
   $('#examwho').textContent='Answers saved for: '+(l.name||'this device');
@@ -2300,21 +2426,46 @@ function bindExamButtons(p,fr,code){
     else openFile({name:p.title+'.html',type:'text/html',data:'data:text/html;charset=utf-8,'+encodeURIComponent(code)});
   };
 }
+/* The single place a finished result is recorded, whichever trigger spotted it.
+   Called by the in-frame patch above the moment grading happens, by the poll
+   below, and once more just before an exam frame is torn down. */
+window.nycpmExamResult=function(examId,score,detail){
+  try{
+    if(!examId)return false;
+    score=String(score==null?'':score).trim();
+    detail=String(detail==null?'':detail).trim();
+    if(!detail)return false;                 /* an ungraded paper has no score line */
+    var prev=attemptOf(examId)||{};
+    if(prev.detail===detail&&prev.score===score)return false;   /* already recorded */
+    var rec={score:score,detail:detail,at:new Date().toISOString(),
+             attempts:(prev.attempts||0)+1,aid:newAid()};
+    saveAttempt(examId,rec);
+    pushProgress(examId,readExamState(examId),{score:rec.score,detail:rec.detail,at:rec.at,aid:rec.aid});
+    renderExams();
+    if(typeof renderMyAttempts==='function')renderMyAttempts();
+    return true;
+  }catch(e){return false}
+};
+/* reads whatever is on screen in the exam frame right now and records it */
+function examCaptureNow(examId){
+  try{
+    var fr=$('#examframe'); if(!fr||!examId)return false;
+    var d=fr.contentDocument; if(!d)return false;
+    var pct=d.querySelector('#pct'), line=d.querySelector('#scoreline');
+    if(!pct||!line)return false;
+    return window.nycpmExamResult(examId,pct.textContent,line.textContent);
+  }catch(e){return false}
+}
 function startExamSniffer(p,fr){
   if(sniffTimer)clearInterval(sniffTimer);
   sniffTimer=setInterval(function(){
     try{
       var d=fr.contentDocument; if(!d)return;
       var pct=d.querySelector('#pct'), line=d.querySelector('#scoreline');
-      if(pct&&pct.textContent&&pct.textContent!=='0%'&&line&&line.textContent){
-        var prev=attemptOf(p.id)||{};
-        if(prev.detail!==line.textContent||prev.score!==pct.textContent){
-          var rec={score:pct.textContent,detail:line.textContent,at:new Date().toISOString(),
-                   attempts:(prev.attempts||0)+1};
-          saveAttempt(p.id,rec);
-          pushProgress(p.id,readExamState(p.id),{score:rec.score,detail:rec.detail,at:rec.at});
-          renderExams();
-        }
+      /* a non-empty score line is what means "graded" — testing the percentage
+         for '0%' used to throw away a genuine score of zero */
+      if(pct&&line&&line.textContent&&String(line.textContent).trim()){
+        window.nycpmExamResult(p.id,pct.textContent,line.textContent);
       }
     }catch(e){}
   },2000);
@@ -2339,6 +2490,16 @@ $('#kindpick').addEventListener('click',function(e){
 /* opening an item in the editor, from anywhere */
 function editItem(id){
   var p=allItems().filter(function(x){return x.id===id})[0]; if(!p)return;
+  /* the list is lean now, so an exam's HTML may not be loaded yet. Fetch it
+     before filling the editor, otherwise publishing would save an empty body. */
+  if(p.kind==='exam'&&!p.code&&p.hasCode){
+    say($('#adminmsg'),'ok','Loading this paper’s code…');
+    fetchItemCode(p.id).then(function(ok){
+      if(ok)editItem(id);
+      else say($('#adminmsg'),'err','Could not load that paper’s code. Nothing was changed — try again in a moment.');
+    });
+    return;
+  }
   editingId=p.id; editingExisting=true;
   setKind(p.kind==='exam'?'exam':'doc');
   $('#ptitle').value=p.title;$('#psum').value=p.summary||'';$('#ptag').value=p.tag||'';
@@ -4509,6 +4670,16 @@ function renderItemAdmin(){
     sel.onchange=function(){
       var id=sel.getAttribute('data-sub');
       var p=allItems().filter(function(x){return x.id===id})[0]; if(!p)return;
+      /* the list is lean, so an exam's HTML may not be loaded. Saving without
+         it would write the paper back empty — fetch it first. */
+      if(p.kind==='exam'&&!p.code&&p.hasCode){
+        libSync('Loading the paper before changing its subject…');
+        fetchItemCode(id).then(function(ok){
+          if(ok)sel.onchange();
+          else{libSync('Could not load that paper, so nothing was changed. Try again in a moment.');renderItemAdmin();}
+        });
+        return;
+      }
       var copy=Object.assign({},p,{subject:sel.value});
       localPosts=localPosts.filter(function(x){return x.id!==id}).concat([copy]);saveLocal();
       remoteItems=remoteItems.filter(function(x){return x.id!==id}).concat([copy]);
@@ -4843,8 +5014,13 @@ function renderAccount(){
 function renderMyAttempts(){
   var box=$('#myattempts'); if(!box)return;
   var pr=progressAll(), ids=Object.keys(pr);
-  if(!ids.length){box.innerHTML='<p class="muted" style="margin:0">No attempts yet. Open any interactive exam and your answers will be kept here.</p>';return;}
-  box.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:.9rem">'+
+  var n=outPending();
+  var note=n?('<p class="mini" style="margin:0 0 10px;color:var(--muted);font-size:.82rem">'+
+              n+' result'+(n===1?'':'s')+' still being saved to your account… you can close the page, '+
+              'it will finish next time you open the site.</p>')
+            :'<p class="mini" style="margin:0 0 10px;color:var(--muted);font-size:.82rem">All results saved to your account.</p>';
+  if(!ids.length){box.innerHTML=note+'<p class="muted" style="margin:0">No attempts yet. Open any interactive exam and your answers will be kept here.</p>';return;}
+  box.innerHTML=note+'<table style="width:100%;border-collapse:collapse;font-size:.9rem">'+
     '<tr><th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)">Exam</th>'+
     '<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)">Attempts</th>'+
     '<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)">Last score</th>'+
@@ -4881,17 +5057,176 @@ function pullExamPref(){
 var PKEY2='nycpm_progress_v1';
 function progressAll(){try{return JSON.parse(localStorage.getItem(PKEY2))||{}}catch(e){return {}}}
 function progressSet(id,rec){var p=progressAll();p[id]=rec;try{localStorage.setItem(PKEY2,JSON.stringify(p))}catch(e){}}
+/* what makes two stored attempts the same attempt */
+function attemptKeyOf(a){
+  if(!a)return '';
+  if(a.aid)return 'aid:'+a.aid;
+  return 'v:'+(a.score||'')+'|'+(a.detail||'');
+}
+/* union of two progress maps: an attempt present in either is kept */
+function mergeProgress(mine,srv){
+  var out={},id;
+  for(id in (srv||{}))out[id]=srv[id];
+  for(id in (mine||{})){
+    var m=mine[id],s=out[id];
+    if(!s){out[id]=m;continue;}
+    var seen={},list=[];
+    (s.attempts||[]).concat(m.attempts||[]).forEach(function(a){
+      var k=attemptKeyOf(a); if(!k||seen[k])return; seen[k]=1; list.push(a);
+    });
+    list.sort(function(p,q){return String(p.at||'').localeCompare(String(q.at||''))});
+    out[id]={examId:id,attempts:list.slice(-50),
+             state:(String(m.updated||'')>String(s.updated||'')?m.state:s.state),
+             updated:(String(m.updated||'')>String(s.updated||'')?m.updated:s.updated)};
+  }
+  return out;
+}
+/* Catch-up for results that were finished on this device but never reached the
+   account — the ones lost to the old fire-and-forget save. Everything a
+   student has ever submitted here is still in this browser, both in the
+   progress map and in the per-exam "last attempt" records, so anything the
+   server has not got is queued and sent. Runs on every sign-in and refresh;
+   already-known attempts are skipped, so it is safe to run repeatedly. */
+function backfillProgress(mine,srv){
+  var queued=0;
+  function known(examId,a){
+    var have=((srv[examId]||{}).attempts)||[];
+    var k=attemptKeyOf(a);
+    for(var i=0;i<have.length;i++){
+      if(attemptKeyOf(have[i])===k)return true;
+      /* an old attempt saved before ids existed */
+      if(have[i].score===a.score&&have[i].detail===a.detail)return true;
+    }
+    return false;
+  }
+  function queue(examId,a){
+    if(!examId||!a||!a.detail||known(examId,a))return;
+    if(!a.aid)a.aid=newAid();
+    outAdd({examId:examId,attempt:{score:a.score,detail:a.detail,at:a.at||new Date().toISOString(),aid:a.aid}});
+    queued++;
+  }
+  /* 1. attempts this device recorded in its progress map */
+  for(var id in (mine||{}))((mine[id]||{}).attempts||[]).forEach(function(a){queue(id,a)});
+  /* 2. the per-exam last-attempt records, which survive even if the map above
+        was overwritten by an earlier refresh */
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i)||'';
+      if(k.indexOf('nycpm_att::')!==0)continue;
+      var parts=k.split('::'); var examId=parts[1]; if(!examId)continue;
+      var rec=null; try{rec=JSON.parse(localStorage.getItem(k))}catch(e){}
+      if(rec&&rec.detail)queue(examId,rec);
+    }
+  }catch(e){}
+  if(queued)outFlush();
+  return queued;
+}
+var lastBackfill=0;
 function pullProgress(tell){
   if(!signedIn())return Promise.resolve();
   pullExamPref();
+  var mine=progressAll();
   return userPost({action:'progressGet',token:USER.token}).then(function(j){
-    try{localStorage.setItem(PKEY2,JSON.stringify(j.progress||{}))}catch(e){}
+    var srv=j.progress||{};
+    /* merge, never overwrite: a refresh must not wipe a result this device has
+       but the account has not been given yet */
+    var merged=mergeProgress(mine,srv);
+    try{localStorage.setItem(PKEY2,JSON.stringify(merged))}catch(e){}
+    var n=backfillProgress(mine,srv);
+    lastBackfill=n;
     renderMyAttempts();renderExams();
-    if(tell)alert('Results refreshed from your account.');
+    if(tell)alert(n?('Results refreshed. '+n+' earlier result'+(n===1?'':'s')+' from this device '+(n===1?'was':'were')+' missing from your account and '+(n===1?'is':'are')+' being saved now.')
+                   :'Results refreshed from your account.');
   }).catch(function(e){
     if(/Signed out/i.test(e.message)){saveUser(null);}
   });
 }
+/* ---- outbox: a save that is queued is a save that is not lost ----
+   Results used to be posted once and forgotten: userPost(...).catch(noop). A
+   slow backend, a dropped connection, or simply closing the tab a moment after
+   submitting meant the score vanished. Every save now goes into a queue in
+   this browser first, is retried until the server confirms it, survives a
+   reload, and is pushed out with sendBeacon if the page is closing. Each
+   finished attempt carries its own id, so a save that is delivered twice is
+   still only recorded once. */
+var OUTK='nycpm_outbox_v1';
+function newAid(){return 'a'+Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
+function outRead(){try{var a=JSON.parse(localStorage.getItem(OUTK));return Array.isArray(a)?a:[]}catch(e){return []}}
+function outWrite(a){try{localStorage.setItem(OUTK,JSON.stringify(a.slice(-300)))}catch(e){}}
+function outPending(){return outRead().length}
+function outAdd(job){
+  job.uid=job.uid||newAid();
+  var a=outRead();
+  /* A finished attempt is precious and always queued. An autosave of the
+     answers-so-far is not: keep only the newest one per exam, so eight-second
+     ticks can never pile up behind a finished result. */
+  if(!job.attempt&&!job.clear){
+    a=a.filter(function(x){return (x.attempt||x.clear)||x.examId!==job.examId});
+  }
+  a.push(job);
+  outWrite(a);
+}
+var outBusy=false,outTimer=null,outFails=0;
+function outJobBody(j){return {examId:j.examId,state:j.state,attempt:j.attempt,clear:j.clear}}
+function outFlush(){
+  if(outBusy||!signedIn())return Promise.resolve(false);
+  var a=outRead();
+  if(!a.length)return Promise.resolve(true);
+  if(outTimer){clearTimeout(outTimer);outTimer=null;}
+  outBusy=true;
+  var send=a.slice(0,25),head=send[0],rest=send.slice(1);
+  /* The first job is always sent in the single-save fields that every version
+     of the backend understands, and only the remainder goes in the batch. So a
+     site uploaded before its backend is updated still saves results — one per
+     request instead of a whole queue at once. A backend that did take the
+     batch says so by naming the exams it saved. */
+  var payload={action:'progressSave',token:USER.token,
+               examId:head.examId,state:head.state,attempt:head.attempt,clear:head.clear};
+  if(rest.length)payload.batch=rest.map(outJobBody);
+  return userPost(payload)
+    .then(function(j){
+      var done={};
+      if(j&&j.examIds)send.forEach(function(x){done[x.uid]=1});   /* the whole batch landed */
+      else done[head.uid]=1;                                      /* older backend: just the first */
+      outWrite(outRead().filter(function(x){return !done[x.uid]}));
+      outFails=0;outBusy=false;
+      if(typeof renderMyAttempts==='function')renderMyAttempts();
+      if(outRead().length)return outFlush();
+      return true;
+    })
+    .catch(function(e){
+      outBusy=false;
+      var msg=(e&&e.message)||'';
+      if(/Signed out/i.test(msg))return false;      /* stays queued until they sign in */
+      outFails++;
+      var wait=Math.min(30000,1000*Math.pow(2,Math.min(outFails,5)));
+      outTimer=setTimeout(function(){outTimer=null;outFlush()},wait);
+      return false;
+    });
+}
+/* last chance as the page goes away: fire and forget, and leave the queue
+   alone — the attempt ids mean a duplicate delivery changes nothing */
+function outBeacon(){
+  try{
+    if(!signedIn()||!navigator.sendBeacon)return;
+    var a=outRead(); if(!a.length)return;
+    var u=api().url; if(!u)return;
+    var head=a[0],rest=a.slice(1,25);
+    var payload={action:'progressSave',token:USER.token,
+                 examId:head.examId,state:head.state,attempt:head.attempt,clear:head.clear};
+    if(rest.length)payload.batch=rest.map(outJobBody);
+    navigator.sendBeacon(u,new Blob([JSON.stringify(payload)],{type:'text/plain;charset=utf-8'}));
+  }catch(e){}
+}
+window.addEventListener('pagehide',outBeacon);
+window.addEventListener('beforeunload',outBeacon);
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='hidden')outBeacon();
+  else outFlush();
+});
+window.addEventListener('online',function(){outFails=0;outFlush()});
+setInterval(function(){if(outPending())outFlush()},20000);
+
 function pushProgress(examId,state,attempt,clear){
   var rec=progressAll()[examId]||{examId:examId,attempts:[]};
   if(state!==undefined&&state!==null)rec.state=state;
@@ -4903,7 +5238,9 @@ function pushProgress(examId,state,attempt,clear){
   }
   rec.updated=new Date().toISOString();
   progressSet(examId,rec);
-  if(signedIn())userPost({action:'progressSave',token:USER.token,examId:examId,state:state,attempt:attempt,clear:!!clear}).catch(function(){});
+  if(!signedIn())return;
+  outAdd({examId:examId,state:state,attempt:attempt,clear:!!clear});
+  outFlush();
 }
 
 /* ================= ADMIN: users ================= */
@@ -5214,7 +5551,13 @@ function route(){
   if(name==='admin'){wireAdminTabs();renderSlideAdmin();renderItemAdmin();wireUserAdmin();renderUserAdmin();}
   if(name==='exams')renderExams();
   if(name==='exam')openExam(r[1]);
-  if(name!=='exam'&&sniffTimer){clearInterval(sniffTimer);sniffTimer=null;
+  if(name!=='exam'&&sniffTimer){
+    /* Leaving the exam used to tear the frame down immediately. A student who
+       submitted and then clicked straight back to the list within the poll's
+       two-second window lost the result. Read the score off the page one last
+       time before anything is thrown away. */
+    if(mountedExam&&mountedExam.id){try{examCaptureNow(mountedExam.id);syncExamState(mountedExam.id);}catch(e){}}
+    clearInterval(sniffTimer);sniffTimer=null;
     if(stateTimer){clearInterval(stateTimer);stateTimer=null;}
     var ef=$('#examframe');if(ef)ef.removeAttribute('srcdoc');
     mountedExam=null;}
@@ -5240,6 +5583,8 @@ window.addEventListener('hashchange',route);
 window.addEventListener('beforeunload',function(){if(fcPushTimer)fcPush();});
 loadUser();fcLoad();refreshAuthUI();renderList();renderExams();drawChips();setKind('doc');initExtras();route();
 refreshUserUI();
+/* anything still queued from a previous visit goes out straight away */
+if(signedIn())outFlush();
 if(signedIn())userPost({action:'me',token:USER.token}).then(function(j){
     saveUser({token:USER.token,email:j.user.email,name:j.user.name,isAdmin:!!j.user.isAdmin});
     refreshAuthUI();pullProgress();fcPull();
