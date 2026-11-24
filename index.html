@@ -1000,6 +1000,19 @@ select.subsel{font:inherit;font-size:.82rem;color:var(--ink);background:var(--bg
   </div>
 </section>
 
+<!-- ONE PAST ATTEMPT, redisplayed with its own score and right/wrong review -->
+<section class="view" id="view-review">
+  <div class="wrap pagehead" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <a class="btn ghost small" href="#/account">&larr; My results</a>
+    <span class="pill" id="revwho"></span>
+    <button class="btn ghost small" id="revfull">Open full screen</button>
+  </div>
+  <div class="wrap"><h2 id="revtitle" style="margin-bottom:8px"></h2>
+    <div class="examframe"><iframe id="revframe" title="A past attempt" allow="fullscreen"></iframe></div>
+    <p class="hint" id="revnote"></p>
+  </div>
+</section>
+
 
 <!-- HISTOLOGY: sections -->
 <section class="view" id="view-histology">
@@ -1765,7 +1778,7 @@ window.addEventListener('resize',function(){clamp();apply();});
 /* ================= CONFIG ================= */
 /* Paste your Google Apps Script web-app URL between the quotes to publish for everyone.
    You can also set it from the Admin panel on your own device. */
-var API_URL = "https://script.google.com/macros/s/AKfycbwuh9qaPIO2_hRQIzxzk_UlQOI_bdPE-tJaxXfUp8N4velFeqX5Rals76FppTD4W5pr/exec";
+var API_URL = "https://script.google.com/macros/s/AKfycbxR6NQRnkjQooQwFowhyn6g-ydKf9baBkBwz_DNLP2YloBzh8eozpvTVtm9qJDSB1eb/exec";
 
 /* ---------------- auth ---------------- */
 var ADMIN_EMAIL='brodielol856@gmail.com';
@@ -1883,6 +1896,118 @@ function apiGetLean(){
     })
     .catch(function(){return apiGet()});
 }
+/* ---- exams are kept on the device so they open with no wait ----
+   The lean list above leaves out each exam's HTML, which keeps the first paint
+   small. On its own that would mean a fetch every time somebody opens an exam.
+   So every exam's HTML is also stored in IndexedDB (room for megabytes, unlike
+   localStorage) and quietly prefetched in the background once the list
+   arrives. Opening an exam then reads it off the device in a millisecond or
+   two, on a fresh load as much as a repeat one, and works with no network at
+   all. Each entry is stamped with the exam's date and size, so republishing an
+   exam replaces the stored copy instead of serving a stale one. */
+var IDBNAME='nycpm_exams',IDBSTORE='code',idbReady=null;
+function idb(){
+  if(idbReady)return idbReady;
+  idbReady=new Promise(function(res){
+    try{
+      if(!window.indexedDB)return res(null);
+      var rq=indexedDB.open(IDBNAME,1);
+      rq.onupgradeneeded=function(){
+        try{ if(!rq.result.objectStoreNames.contains(IDBSTORE))rq.result.createObjectStore(IDBSTORE); }catch(e){}
+      };
+      rq.onsuccess=function(){res(rq.result)};
+      rq.onerror=function(){res(null)};
+      rq.onblocked=function(){res(null)};
+    }catch(e){res(null)}
+  });
+  return idbReady;
+}
+function idbGet(key){
+  return idb().then(function(db){
+    if(!db)return null;
+    return new Promise(function(res){
+      try{
+        var r=db.transaction(IDBSTORE,'readonly').objectStore(IDBSTORE).get(key);
+        r.onsuccess=function(){res(r.result||null)};
+        r.onerror=function(){res(null)};
+      }catch(e){res(null)}
+    });
+  }).catch(function(){return null});
+}
+function idbPut(key,val){
+  return idb().then(function(db){
+    if(!db)return false;
+    return new Promise(function(res){
+      try{
+        var t=db.transaction(IDBSTORE,'readwrite');
+        t.objectStore(IDBSTORE).put(val,key);
+        t.oncomplete=function(){res(true)};
+        t.onerror=function(){res(false)};
+        t.onabort=function(){res(false)};
+      }catch(e){res(false)}
+    });
+  }).catch(function(){return false});
+}
+/* which version of an exam we are holding */
+function examVer(p){
+  if(!p)return '';
+  return String(p.date||'')+'|'+String(p.codeLen||(p.code?p.code.length:0));
+}
+/* The one way to get an exam's HTML: already in hand, else off the device,
+   else from the backend. Resolves with the HTML, or null if it cannot be had. */
+function withExamCode(id){
+  var p=exams().filter(function(x){return x.id===id})[0];
+  if(!p)return Promise.resolve(null);
+  if(p.code)return Promise.resolve(p.code);
+  var want=examVer(p);
+  return idbGet(id).then(function(hit){
+    if(hit&&hit.code&&(!want||hit.ver===want)){
+      applyFetchedCode(id,{code:hit.code});
+      return hit.code;
+    }
+    return fetchItemCode(id).then(function(ok){
+      if(!ok)return (hit&&hit.code)?hit.code:null;   /* a stale copy beats nothing */
+      var q=exams().filter(function(x){return x.id===id})[0];
+      var code=q&&q.code;
+      if(code)idbPut(id,{ver:examVer(q),code:code,at:Date.now()});
+      return code||null;
+    });
+  });
+}
+/* Fill the device's copy of every exam in the background, one at a time so it
+   never competes with whatever the student is doing. */
+var prefetching=false;
+function prefetchExams(){
+  if(prefetching)return;
+  var list=exams().filter(function(p){return !p.code});
+  if(!list.length)return;
+  prefetching=true;
+  var i=0;
+  function step(){
+    if(i>=list.length){prefetching=false;return;}
+    var p=list[i++];
+    idbGet(p.id).then(function(hit){
+      var want=examVer(p);
+      if(hit&&hit.code&&(!want||hit.ver===want))return null;   /* already held */
+      return fetchItemCode(p.id).then(function(ok){
+        if(!ok)return null;
+        var q=exams().filter(function(x){return x.id===p.id})[0];
+        if(q&&q.code)return idbPut(p.id,{ver:examVer(q),code:q.code,at:Date.now()});
+        return null;
+      });
+    }).catch(function(){return null}).then(function(){
+      /* drop the in-memory copy again: the device has it now, and holding every
+         exam's HTML in memory is what made the old list heavy */
+      remoteItems=remoteItems.map(function(x){
+        if(x.id!==p.id||!x.hasCode)return x;
+        var c={};for(var k in x)if(k!=='code')c[k]=x[k];return c;
+      });
+      if(window.requestIdleCallback)requestIdleCallback(step,{timeout:1200});
+      else setTimeout(step,120);
+    });
+  }
+  step();
+}
 var codeFetching={};
 function applyFetchedCode(id,item){
   if(!item||!item.code)return;
@@ -1955,7 +2080,7 @@ loadLocal();
 
 var CACHEK='nycpm_cache_v2';
 var dataSettled=false;
-setTimeout(function(){ if(!dataSettled){dataSettled=true;renderList();renderExams();} },2500);
+setTimeout(function(){ if(!dataSettled){dataSettled=true;renderList();renderExams();} },1200);
 function waiting(){ return !dataSettled && api().url; }
 function skeleton(){ return '<div class="empty">Loading the latest list\u2026</div>'; }
 function useCache(){
@@ -1989,6 +2114,9 @@ function pullRemote(){
       try{localStorage.setItem(CACHEK,JSON.stringify({items:arr,at:Date.now()}))}catch(e){}}
     dataSettled=true;
     renderList();renderExams();renderAdminList();applyFeatures();
+    /* put every exam on the device, so opening one needs no network */
+    if(window.requestIdleCallback)requestIdleCallback(function(){prefetchExams()},{timeout:1500});
+    else setTimeout(prefetchExams,300);
     if(typeof renderItemAdmin==='function')renderItemAdmin();
     if(typeof renderMyAttempts==='function')renderMyAttempts();
     /* Re-rendering the page the visitor is on is fine for a document or a
@@ -2009,8 +2137,7 @@ fetch('posts.json',{cache:'no-cache'}).then(function(r){return r.ok?r.json():nul
 }).catch(function(){}).then(function(){
   /* the cached copy is already on screen; fetching fresh data can wait until
      the browser has finished the first paint */
-  if(window.requestIdleCallback)requestIdleCallback(function(){pullRemote()},{timeout:2500});
-  else setTimeout(pullRemote,350);
+  pullRemote();
 });
 
 /* ---------------- helpers ---------------- */
@@ -2356,6 +2483,95 @@ function examResultPatch(examId){
     report();
   });
 }
+/* ---- reviewing one finished attempt ----
+   The papers already know how to draw a results page: a score, a per-topic
+   breakdown and every question with the student's answer, the right answer and
+   the explanation. So a past attempt is shown by mounting the same paper,
+   putting that attempt's answers into its state and letting it grade itself.
+
+   The frame gets a storage shim backed by nothing but an object in memory, so
+   a review can neither read nor disturb the student's live attempt, and the
+   result reporter is deliberately NOT injected — looking at an old score must
+   never record a new one. */
+function reviewShim(){
+  return '<scr'+'ipt>(function(){var m={};'+
+  'var shim={getItem:function(k){return m[k]===undefined?null:m[k]},'+
+  'setItem:function(k,v){m[k]=String(v)},removeItem:function(k){delete m[k]},'+
+  'clear:function(){m={}},key:function(i){return Object.keys(m)[i]||null}};'+
+  'Object.defineProperty(shim,"length",{get:function(){return Object.keys(m).length}});'+
+  'try{Object.defineProperty(window,"localStorage",{configurable:true,get:function(){return shim}})}catch(e){}'+
+  'try{Object.defineProperty(window,"sessionStorage",{configurable:true,get:function(){return shim}})}catch(e){}'+
+  '})();</scr'+'ipt>';
+}
+function examReviewPatch(att){
+  function ready(fn){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',fn);else fn();}
+  ready(function(){
+    try{
+      if(typeof state==='undefined'||typeof finish!=='function'){
+        if(window.parent&&window.parent.nycpmReviewFailed)window.parent.nycpmReviewFailed();
+        return;
+      }
+      state.i=0;
+      state.ans=att.ans||{};
+      state.flags=att.fl||{};
+      state.out={};state.hl={};
+      state.elapsed=att.el||0;
+      state.started=Date.now()-(att.el||0)*1000;
+      state.done=true;
+      finish();                      /* draws the score and the full review */
+      /* nothing here may start a new attempt */
+      ['retake','submit','resumebtn','startbtn'].forEach(function(id){
+        var el=document.getElementById(id);
+        if(el)el.style.display='none';
+      });
+      var st=document.getElementById('start');
+      if(st)st.classList.add('hidden');
+      if(window.parent&&window.parent.nycpmReviewReady)window.parent.nycpmReviewReady();
+    }catch(e){
+      if(window.parent&&window.parent.nycpmReviewFailed)window.parent.nycpmReviewFailed();
+    }
+  });
+}
+/* find one stored attempt */
+function findAttempt(examId,aid){
+  var rec=progressAll()[examId]; if(!rec)return null;
+  var list=rec.attempts||[];
+  for(var i=0;i<list.length;i++)if(list[i].aid===aid)return {att:list[i],idx:i,total:list.length};
+  return null;
+}
+window.nycpmReviewReady=function(){ var n=$('#revnote'); if(n)n.textContent=
+  'This is a finished attempt, exactly as it was marked. Scroll down for every question with your answer, the right answer and the explanation.'; };
+window.nycpmReviewFailed=function(){ var n=$('#revnote'); if(n)n.textContent=
+  'This attempt could not be redisplayed. Its score is still saved on your account.'; };
+function openReview(examId,aid){
+  var fr=$('#revframe');
+  var p=exams().filter(function(x){return x.id===examId})[0];
+  var hit=findAttempt(examId,aid);
+  $('#revtitle').textContent=(p?p.title:examId);
+  if(!hit){
+    $('#revwho').textContent='';
+    $('#revnote').textContent='That attempt is not on this device. Open "My results" and press "Refresh my results" first.';
+    fr.removeAttribute('srcdoc');
+    return;
+  }
+  var att=hit.att;
+  $('#revwho').textContent='Attempt '+(hit.idx+1)+' of '+hit.total+' \u00b7 '+(att.score||'')+
+    (att.at?' \u00b7 '+String(att.at).slice(0,10):'');
+  if(!att.ans){
+    $('#revnote').textContent='This attempt was recorded before answers were kept, so only its score is available: '+
+      (att.detail||att.score||'');
+    fr.removeAttribute('srcdoc');
+    return;
+  }
+  $('#revnote').textContent='Loading this attempt\u2026';
+  withExamCode(examId).then(function(code){
+    if(!code){$('#revnote').textContent='The exam this attempt belongs to could not be loaded just now.';return;}
+    fr.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads');
+    fr.srcdoc=reviewShim()+code+
+      '<scr'+'ipt>('+examReviewPatch.toString()+')('+JSON.stringify({ans:att.ans,fl:att.fl||{},el:att.el||0})+');</scr'+'ipt>';
+  });
+  $('#revfull').onclick=function(){ if(fr.requestFullscreen)fr.requestFullscreen(); };
+}
 function examShim(examId){
   var P=examPrefix(examId);
   return '<scr'+'ipt>(function(){var P='+JSON.stringify(P)+';var back=null;try{back=window.parent.localStorage}catch(e){}'+
@@ -2381,14 +2597,17 @@ function openExam(id,force){
   var p=exams().filter(function(x){return x.id===id})[0];
   var fr=$('#examframe');
   if(!p){$('#examtitle').textContent='Exam not found';fr.removeAttribute('srcdoc');mountedExam=null;return;}
-  /* the list no longer ships every paper's HTML; fetch this one, then carry on */
-  if(!p.code&&p.hasCode){
+  /* The list leaves out the exam HTML, so take it from the device (a millisecond
+     or two) or, failing that, the backend. No loading message unless it really
+     is slow, so an exam already held opens with nothing in between. */
+  if(!p.code){
     $('#examtitle').textContent=p.title;
-    if($('#examnote'))$('#examnote').textContent='Opening this paper…';
-    fetchItemCode(p.id).then(function(ok){
-      if(ok){openExam(id,force);return;}
-      if($('#examnote'))$('#examnote').textContent=
-        'This paper could not be loaded just now. Check your connection and reopen it — nothing you have already answered is lost.';
+    var slow=setTimeout(function(){var n=$('#examnote');if(n)n.textContent='Opening…'},150);
+    withExamCode(p.id).then(function(code){
+      clearTimeout(slow);
+      if(code){openExam(id,force);return;}
+      var n=$('#examnote');
+      if(n)n.textContent='This exam could not be loaded just now. Check your connection and open it again — nothing you have already answered is lost.';
     });
     return;
   }
@@ -2429,6 +2648,22 @@ function bindExamButtons(p,fr,code){
 /* The single place a finished result is recorded, whichever trigger spotted it.
    Called by the in-frame patch above the moment grading happens, by the poll
    below, and once more just before an exam frame is torn down. */
+/* Pulls the answers out of what the paper saved, so a finished attempt can be
+   re-displayed later. Only the chosen answers, the flags and the elapsed time
+   are kept: that is all the paper needs to redraw its own results page, and it
+   keeps a stored attempt to a few hundred bytes. */
+function examAnswers(examId){
+  try{
+    var blob=JSON.parse(readExamState(examId)||'{}');
+    var keys=Object.keys(blob);
+    for(var i=0;i<keys.length;i++){
+      var st=null; try{st=JSON.parse(blob[keys[i]])}catch(e){continue}
+      if(st&&st.ans&&typeof st.ans==='object')
+        return {k:keys[i],ans:st.ans,fl:st.flags||{},el:st.elapsed||0,n:st.n||0};
+    }
+  }catch(e){}
+  return null;
+}
 window.nycpmExamResult=function(examId,score,detail){
   try{
     if(!examId)return false;
@@ -2440,12 +2675,39 @@ window.nycpmExamResult=function(examId,score,detail){
     var rec={score:score,detail:detail,at:new Date().toISOString(),
              attempts:(prev.attempts||0)+1,aid:newAid()};
     saveAttempt(examId,rec);
-    pushProgress(examId,readExamState(examId),{score:rec.score,detail:rec.detail,at:rec.at,aid:rec.aid});
+    var att={score:rec.score,detail:rec.detail,at:rec.at,aid:rec.aid};
+    var a=examAnswers(examId);
+    if(a){att.k=a.k;att.ans=a.ans;att.fl=a.fl;att.el=a.el;}
+    pushProgress(examId,readExamState(examId),att);
     renderExams();
     if(typeof renderMyAttempts==='function')renderMyAttempts();
+    sayExamSaved(examId);
     return true;
   }catch(e){return false}
 };
+/* Say plainly what happened to the score. Nothing is kept on an account unless
+   the student is signed in, and the site used to leave that unsaid \u2014 which
+   looks exactly like a result that failed to save. */
+function sayExamSaved(examId){
+  var n=$('#examnote'); if(!n)return;
+  if(!signedIn()){
+    n.innerHTML='Scored and kept on this device. <b>You are not signed in, so it is not on an account.</b> '+
+      '<a href="#/account">Sign in</a> and finish an attempt to keep your results and review them later.';
+    return;
+  }
+  var DONE='Scored and saved to your account. Open My results to see every attempt and what you got right and wrong.';
+  if(!outPending()){n.textContent=DONE;return;}
+  n.textContent='Scored. Saving to your account… it will appear under My results in a moment, and finishes even if you close this page.';
+  outOnIdle(function(){
+    var m=$('#examnote'); if(m&&signedIn())m.textContent=DONE;
+  });
+  /* if it is somehow still stuck later, say so rather than leave it hanging */
+  setTimeout(function(){
+    var m=$('#examnote');
+    if(m&&signedIn()&&outPending())
+      m.textContent='Scored and kept on this device. It has not reached your account yet — it keeps trying, including next time you open the site.';
+  },20000);
+}
 /* reads whatever is on screen in the exam frame right now and records it */
 function examCaptureNow(examId){
   try{
@@ -5011,29 +5273,66 @@ function renderAccount(){
       .catch(function(e){say(m(),'err',e.message)});
   };
 }
+/* Every attempt on its own row, newest first, each one opening its own marked
+   results page. */
+function fmtWhen(iso){
+  if(!iso)return '';
+  var d=new Date(iso); if(isNaN(d))return String(iso).slice(0,10);
+  return d.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})+
+         ' \u00b7 '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+}
 function renderMyAttempts(){
   var box=$('#myattempts'); if(!box)return;
-  var pr=progressAll(), ids=Object.keys(pr);
+  var pr=progressAll();
   var n=outPending();
-  var note=n?('<p class="mini" style="margin:0 0 10px;color:var(--muted);font-size:.82rem">'+
-              n+' result'+(n===1?'':'s')+' still being saved to your account… you can close the page, '+
-              'it will finish next time you open the site.</p>')
-            :'<p class="mini" style="margin:0 0 10px;color:var(--muted);font-size:.82rem">All results saved to your account.</p>';
-  if(!ids.length){box.innerHTML=note+'<p class="muted" style="margin:0">No attempts yet. Open any interactive exam and your answers will be kept here.</p>';return;}
-  box.innerHTML=note+'<table style="width:100%;border-collapse:collapse;font-size:.9rem">'+
-    '<tr><th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)">Exam</th>'+
-    '<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)">Attempts</th>'+
-    '<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)">Last score</th>'+
-    '<th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)">When</th></tr>'+
-    ids.map(function(id){
-      var r=pr[id], ex=allItems().filter(function(x){return x.id===id})[0];
-      var last=(r.attempts||[]).slice(-1)[0]||{};
-      return '<tr><td style="padding:6px 4px;border-bottom:1px solid var(--line)">'+
-        (ex?'<a href="#/exam/'+encodeURIComponent(id)+'">'+esc(ex.title)+'</a>':esc(id))+'</td>'+
-        '<td style="padding:6px 4px;border-bottom:1px solid var(--line)">'+((r.attempts||[]).length||(r.state?'in progress':'0'))+'</td>'+
-        '<td style="padding:6px 4px;border-bottom:1px solid var(--line)">'+esc(last.score||'\u2014')+'</td>'+
-        '<td style="padding:6px 4px;border-bottom:1px solid var(--line)" class="muted">'+esc((r.updated||'').slice(0,10))+'</td></tr>';
-    }).join('')+'</table>';
+  var note=n?('<p class="mini" style="margin:0 0 12px;color:var(--muted);font-size:.82rem">'+
+              n+' result'+(n===1?'':'s')+' still being saved\u2026 you can close the page, it will finish next time you open the site.</p>')
+            :'<p class="mini" style="margin:0 0 12px;color:var(--muted);font-size:.82rem">Every result below is saved to your account.</p>';
+
+  var rows=[];
+  Object.keys(pr).forEach(function(id){
+    var r=pr[id]||{}, ex=allItems().filter(function(x){return x.id===id})[0];
+    var title=ex?ex.title:id;
+    var list=(r.attempts||[]);
+    list.forEach(function(att,i){
+      rows.push({id:id,title:title,att:att,no:i+1,of:list.length,at:att.at||r.updated||''});
+    });
+    if(!list.length&&r.state)rows.push({id:id,title:title,att:null,at:r.updated||''});
+  });
+  rows.sort(function(x,y){return String(y.at).localeCompare(String(x.at))});
+
+  if(!rows.length){
+    box.innerHTML=note+'<p class="muted" style="margin:0">No attempts yet. Open any interactive exam and your score will appear here the moment you submit it.</p>';
+    return;
+  }
+  var cell='padding:9px 6px;border-bottom:1px solid var(--line)';
+  box.innerHTML=note+'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.9rem">'+
+    '<tr><th style="text-align:left;'+cell+'">Exam</th>'+
+    '<th style="text-align:left;'+cell+'">Attempt</th>'+
+    '<th style="text-align:left;'+cell+'">Score</th>'+
+    '<th style="text-align:left;'+cell+'">Result</th>'+
+    '<th style="text-align:left;'+cell+'">When</th>'+
+    '<th style="text-align:left;'+cell+'"></th></tr>'+
+    rows.map(function(row){
+      if(!row.att){
+        return '<tr><td style="'+cell+'">'+esc(row.title)+'</td>'+
+          '<td style="'+cell+'" class="muted">in progress</td>'+
+          '<td style="'+cell+'">\u2014</td><td style="'+cell+'" class="muted">not submitted yet</td>'+
+          '<td style="'+cell+'" class="muted">'+esc(fmtWhen(row.at))+'</td>'+
+          '<td style="'+cell+'"><a class="btn ghost small" href="#/exam/'+encodeURIComponent(row.id)+'">Carry on</a></td></tr>';
+      }
+      var href='#/review/'+encodeURIComponent(row.id)+'/'+encodeURIComponent(row.att.aid||('n'+row.no));
+      var can=!!row.att.ans;
+      return '<tr><td style="'+cell+'">'+esc(row.title)+'</td>'+
+        '<td style="'+cell+'">'+row.no+' of '+row.of+'</td>'+
+        '<td style="'+cell+'"><b>'+esc(row.att.score||'\u2014')+'</b></td>'+
+        '<td style="'+cell+'" class="muted">'+esc(row.att.detail||'')+'</td>'+
+        '<td style="'+cell+'" class="muted">'+esc(fmtWhen(row.att.at))+'</td>'+
+        '<td style="'+cell+'">'+(can
+          ? '<a class="btn ghost small" href="'+href+'">See my answers</a>'
+          : '<span class="mini muted" title="Recorded before answers were kept">score only</span>')+
+        '</td></tr>';
+    }).join('')+'</table></div>';
 }
 
 /* ---- exam preferences (answer-reveal mode) ---- */
@@ -5057,86 +5356,19 @@ function pullExamPref(){
 var PKEY2='nycpm_progress_v1';
 function progressAll(){try{return JSON.parse(localStorage.getItem(PKEY2))||{}}catch(e){return {}}}
 function progressSet(id,rec){var p=progressAll();p[id]=rec;try{localStorage.setItem(PKEY2,JSON.stringify(p))}catch(e){}}
-/* what makes two stored attempts the same attempt */
-function attemptKeyOf(a){
-  if(!a)return '';
-  if(a.aid)return 'aid:'+a.aid;
-  return 'v:'+(a.score||'')+'|'+(a.detail||'');
-}
-/* union of two progress maps: an attempt present in either is kept */
-function mergeProgress(mine,srv){
-  var out={},id;
-  for(id in (srv||{}))out[id]=srv[id];
-  for(id in (mine||{})){
-    var m=mine[id],s=out[id];
-    if(!s){out[id]=m;continue;}
-    var seen={},list=[];
-    (s.attempts||[]).concat(m.attempts||[]).forEach(function(a){
-      var k=attemptKeyOf(a); if(!k||seen[k])return; seen[k]=1; list.push(a);
-    });
-    list.sort(function(p,q){return String(p.at||'').localeCompare(String(q.at||''))});
-    out[id]={examId:id,attempts:list.slice(-50),
-             state:(String(m.updated||'')>String(s.updated||'')?m.state:s.state),
-             updated:(String(m.updated||'')>String(s.updated||'')?m.updated:s.updated)};
-  }
-  return out;
-}
-/* Catch-up for results that were finished on this device but never reached the
-   account — the ones lost to the old fire-and-forget save. Everything a
-   student has ever submitted here is still in this browser, both in the
-   progress map and in the per-exam "last attempt" records, so anything the
-   server has not got is queued and sent. Runs on every sign-in and refresh;
-   already-known attempts are skipped, so it is safe to run repeatedly. */
-function backfillProgress(mine,srv){
-  var queued=0;
-  function known(examId,a){
-    var have=((srv[examId]||{}).attempts)||[];
-    var k=attemptKeyOf(a);
-    for(var i=0;i<have.length;i++){
-      if(attemptKeyOf(have[i])===k)return true;
-      /* an old attempt saved before ids existed */
-      if(have[i].score===a.score&&have[i].detail===a.detail)return true;
-    }
-    return false;
-  }
-  function queue(examId,a){
-    if(!examId||!a||!a.detail||known(examId,a))return;
-    if(!a.aid)a.aid=newAid();
-    outAdd({examId:examId,attempt:{score:a.score,detail:a.detail,at:a.at||new Date().toISOString(),aid:a.aid}});
-    queued++;
-  }
-  /* 1. attempts this device recorded in its progress map */
-  for(var id in (mine||{}))((mine[id]||{}).attempts||[]).forEach(function(a){queue(id,a)});
-  /* 2. the per-exam last-attempt records, which survive even if the map above
-        was overwritten by an earlier refresh */
-  try{
-    for(var i=0;i<localStorage.length;i++){
-      var k=localStorage.key(i)||'';
-      if(k.indexOf('nycpm_att::')!==0)continue;
-      var parts=k.split('::'); var examId=parts[1]; if(!examId)continue;
-      var rec=null; try{rec=JSON.parse(localStorage.getItem(k))}catch(e){}
-      if(rec&&rec.detail)queue(examId,rec);
-    }
-  }catch(e){}
-  if(queued)outFlush();
-  return queued;
-}
-var lastBackfill=0;
+/* The account is the source of truth for results. Anything this device has
+   not managed to send yet is flushed first, so taking the server's copy can
+   never discard a result that was still on its way out. */
 function pullProgress(tell){
   if(!signedIn())return Promise.resolve();
   pullExamPref();
-  var mine=progressAll();
-  return userPost({action:'progressGet',token:USER.token}).then(function(j){
-    var srv=j.progress||{};
-    /* merge, never overwrite: a refresh must not wipe a result this device has
-       but the account has not been given yet */
-    var merged=mergeProgress(mine,srv);
-    try{localStorage.setItem(PKEY2,JSON.stringify(merged))}catch(e){}
-    var n=backfillProgress(mine,srv);
-    lastBackfill=n;
+  var first=outPending()?outFlush():Promise.resolve(true);
+  return first.then(function(){
+    return userPost({action:'progressGet',token:USER.token});
+  }).then(function(j){
+    try{localStorage.setItem(PKEY2,JSON.stringify(j.progress||{}))}catch(e){}
     renderMyAttempts();renderExams();
-    if(tell)alert(n?('Results refreshed. '+n+' earlier result'+(n===1?'':'s')+' from this device '+(n===1?'was':'were')+' missing from your account and '+(n===1?'is':'are')+' being saved now.')
-                   :'Results refreshed from your account.');
+    if(tell)alert('Results refreshed from your account.');
   }).catch(function(e){
     if(/Signed out/i.test(e.message)){saveUser(null);}
   });
@@ -5166,7 +5398,16 @@ function outAdd(job){
   a.push(job);
   outWrite(a);
 }
-var outBusy=false,outTimer=null,outFails=0;
+var outBusy=false,outTimer=null,outFails=0,outIdle=[];
+/* run fn once the save queue is empty (at once, if it already is) */
+function outOnIdle(fn){
+  if(!outPending())return fn(true);
+  outIdle.push(fn);
+}
+function outFireIdle(okAll){
+  var fns=outIdle; outIdle=[];
+  fns.forEach(function(f){try{f(okAll)}catch(e){}});
+}
 function outJobBody(j){return {examId:j.examId,state:j.state,attempt:j.attempt,clear:j.clear}}
 function outFlush(){
   if(outBusy||!signedIn())return Promise.resolve(false);
@@ -5192,6 +5433,7 @@ function outFlush(){
       outFails=0;outBusy=false;
       if(typeof renderMyAttempts==='function')renderMyAttempts();
       if(outRead().length)return outFlush();
+      outFireIdle(true);
       return true;
     })
     .catch(function(e){
@@ -5233,8 +5475,18 @@ function pushProgress(examId,state,attempt,clear){
   if(clear)rec.state=null;
   if(attempt){
     rec.attempts=rec.attempts||[];
-    var last=rec.attempts[rec.attempts.length-1];
-    if(!last||last.score!==attempt.score||last.detail!==attempt.detail)rec.attempts.push(attempt);
+    /* Judge "same attempt" by its id. Two genuine attempts can score the same
+       in the same time, and comparing score and detail dropped the second. */
+    var dup=false;
+    if(attempt.aid){
+      for(var di=0;di<rec.attempts.length;di++)
+        if(rec.attempts[di].aid===attempt.aid){dup=true;break;}
+    }else{
+      var last=rec.attempts[rec.attempts.length-1];
+      dup=!!(last&&last.score===attempt.score&&last.detail===attempt.detail);
+    }
+    if(!dup)rec.attempts.push(attempt);
+    if(rec.attempts.length>50)rec.attempts=rec.attempts.slice(-50);
   }
   rec.updated=new Date().toISOString();
   progressSet(examId,rec);
@@ -5525,9 +5777,12 @@ function renderSubjectFilter(which){
 function currentRoute(){
   var h=(location.hash||'#/home').replace(/^#\/?/,'').split('/');
   var n=h[0]||'home', a=h[1]?decodeURIComponent(h[1]):null;
+  /* a third segment, for #/review/<exam>/<attempt>; every older caller reads
+     only the first two, so nothing else is affected */
+  var b=h[2]?decodeURIComponent(h[2]):null;
   if(n==='histology'&&a)n='histosection';
   if(n==='physiology'&&a)n='anim';
-  return [n,a];
+  return [n,a,b];
 }
 function route(){
   var r=currentRoute(),name=r[0];
@@ -5551,6 +5806,8 @@ function route(){
   if(name==='admin'){wireAdminTabs();renderSlideAdmin();renderItemAdmin();wireUserAdmin();renderUserAdmin();}
   if(name==='exams')renderExams();
   if(name==='exam')openExam(r[1]);
+  if(name==='review')openReview(r[1],r[2]);
+  if(name!=='review'){var rf=$('#revframe');if(rf&&rf.getAttribute('srcdoc'))rf.removeAttribute('srcdoc');}
   if(name!=='exam'&&sniffTimer){
     /* Leaving the exam used to tear the frame down immediately. A student who
        submitted and then clicked straight back to the list within the poll's
@@ -5562,7 +5819,7 @@ function route(){
     var ef=$('#examframe');if(ef)ef.removeAttribute('srcdoc');
     mountedExam=null;}
   if(name==='admin'){var a=api();$('#apiurl').value=a.url||'';$('#apikey').value=a.key||'';}
-  var known={home:1,cycles:1,clinical:1,post:1,login:1,admin:1,exams:1,exam:1,account:1,histology:1,histosection:1,slide:1,histoquiz:1,physiology:1,anim:1,bioquiz:1,physioquiz:1,flashcards:1,flashstudy:1};
+  var known={home:1,cycles:1,clinical:1,post:1,login:1,admin:1,exams:1,exam:1,review:1,account:1,histology:1,histosection:1,slide:1,histoquiz:1,physiology:1,anim:1,bioquiz:1,physioquiz:1,flashcards:1,flashstudy:1};
   if(!known[name])name='home';
   $$('.view').forEach(function(v){v.classList.toggle('on',v.id==='view-'+name);});
   $$('nav.main a').forEach(function(a){
