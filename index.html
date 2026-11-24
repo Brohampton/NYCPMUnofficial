@@ -2130,6 +2130,12 @@ function pullRemote(){
   }).catch(function(){});
 }
 useCache();
+/* the cached list is enough to start putting exams on the device; waiting for
+   the fresh list first is what left the first exam of a visit needing a fetch */
+if(remoteItems.length){
+  if(window.requestIdleCallback)requestIdleCallback(function(){prefetchExams()},{timeout:800});
+  else setTimeout(prefetchExams,150);
+}
 fetch('posts.json',{cache:'no-cache'}).then(function(r){return r.ok?r.json():null}).then(function(j){
   if(j){var arr=j.posts||j.items||j; if(Array.isArray(arr)){arr.forEach(function(p){if(!p.kind)p.kind='doc';});
     filePosts=arr;renderList();renderExams();renderAdminList();
@@ -2444,12 +2450,32 @@ function examRevealPatch(){
    so no attempt is ever recorded twice. */
 function examResultPatch(examId){
   var sentKey='';
+  /* Work the score out from the questions and the answers. Used when the paper
+     has finished but its score elements are missing or not filled in yet, so a
+     result is never lost just because a paper is laid out differently. */
+  function computed(){
+    try{
+      if(typeof Q==='undefined'||typeof state==='undefined'||!state.ans)return null;
+      var right=0,total=Q.length;
+      for(var i=0;i<total;i++)if(state.ans[i]===Q[i].a)right++;
+      if(!total)return null;
+      var el=state.elapsed||0,mm=Math.floor(el/60),ss=el%60;
+      return {score:Math.round(right/total*100)+'%',
+              detail:right+' of '+total+' correct in '+(mm<10?'0':'')+mm+':'+(ss<10?'0':'')+ss+'.'};
+    }catch(e){return null}
+  }
   function report(){
     try{
-      var p=document.getElementById('pct'), s=document.getElementById('scoreline');
-      if(!p||!s)return;
-      var score=String(p.textContent||'').trim(), detail=String(s.textContent||'').trim();
-      if(!detail)return;                       /* not graded yet */
+      var pe=document.getElementById('pct'), se=document.getElementById('scoreline');
+      var score=pe?String(pe.textContent||'').trim():'';
+      var detail=se?String(se.textContent||'').trim():'';
+      if(!detail){
+        /* no score line, or not written yet: only our own count can tell us
+           whether this attempt is actually finished */
+        if(typeof state==='undefined'||!state||state.done!==true)return;
+        var c=computed(); if(!c)return;
+        score=c.score; detail=c.detail;
+      }
       var key=score+'|'+detail;
       if(key===sentKey)return;
       sentKey=key;
@@ -2457,6 +2483,8 @@ function examResultPatch(examId){
         window.parent.nycpmExamResult(examId,score,detail);
     }catch(e){}
   }
+  /* the shim calls this the instant the paper saves a finished attempt */
+  window.__nycpmFinished=function(){ report(); setTimeout(report,0); setTimeout(report,60); };
   function ready(fn){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',fn);else fn();}
   ready(function(){
     try{
@@ -2576,7 +2604,13 @@ function examShim(examId){
   var P=examPrefix(examId);
   return '<scr'+'ipt>(function(){var P='+JSON.stringify(P)+';var back=null;try{back=window.parent.localStorage}catch(e){}'+
   'if(!back)return;function ks(){var a=[];for(var j=0;j<back.length;j++){var k=back.key(j);if(k&&k.indexOf(P)===0)a.push(k.slice(P.length))}return a}'+
-  'var shim={getItem:function(x){return back.getItem(P+x)},setItem:function(x,v){back.setItem(P+x,v)},removeItem:function(x){back.removeItem(P+x)},'+
+  'var shim={getItem:function(x){return back.getItem(P+x)},'+
+  /* every paper records its progress through this; a state written with
+     done:true IS the moment of submitting, whatever the paper calls its
+     buttons or ids */
+  'setItem:function(x,v){back.setItem(P+x,v);try{var o=JSON.parse(v);'+
+  'if(o&&o.done===true&&o.ans&&window.__nycpmFinished)window.__nycpmFinished();}catch(e){}},'+
+  'removeItem:function(x){back.removeItem(P+x)},'+
   'clear:function(){ks().forEach(function(k){back.removeItem(P+k)})},key:function(i){return ks()[i]||null}};'+
   'Object.defineProperty(shim,"length",{get:function(){return ks().length}});'+
   'try{Object.defineProperty(window,"localStorage",{configurable:true,get:function(){return shim}})}catch(e){}'+
@@ -5185,13 +5219,106 @@ function pwHash(email,pass){
       iterations:150000,hash:'SHA-256'},k,256)})
     .then(function(buf){var b=new Uint8Array(buf),s='';for(var i=0;i<b.length;i++)s+=('0'+b[i].toString(16)).slice(-2);return s});
 }
+/* ---- "Check saving": proves, against the live backend, whether a result can
+   actually be stored on this account, and says exactly where it stops if not.
+   It writes one throwaway record and deletes it again. */
+function runSaveCheck(){
+  var box=$('#savediag'); if(!box)return;
+  box.hidden=false;
+  var lines=[],t0=Date.now();
+  function show(extra){
+    box.innerHTML=lines.join('<br>')+(extra?('<br>'+extra):'');
+  }
+  function add(label,value,good){
+    var mark=good===true?'\u2713 ':(good===false?'\u2717 ':'');
+    lines.push('<b>'+mark+esc(label)+'</b> '+esc(String(value===undefined?'':value)));
+    show();
+  }
+  var a=api(),builtIn=API_URL||'';
+  add('Signed in as',signedIn()?(USER.email||''):'NOT SIGNED IN \u2014 results cannot be saved to an account',signedIn());
+  var usingSaved=!!(a.url&&a.url!==builtIn);
+  add('Backend in use',a.url||'(none)');
+  if(usingSaved){
+    lines.push('<span class="muted">This address was saved in the Admin panel and overrides the one built into the site '+
+      '('+esc(builtIn)+'). If you redeployed the Apps Script, the saved one is out of date.</span>');
+    show();
+  }
+  add('Waiting to be saved',outPending()+' result'+(outPending()===1?'':'s'));
+  if(lastApiError)add('Last backend error',lastApiError,false);
+  if(!signedIn()){show('<br><b>Sign in first, then take an exam.</b> Nothing is stored on an account while signed out.');return;}
+
+  show('<br>Testing a real save\u2026');
+  var probeId='__savecheck__',aid='chk'+Date.now().toString(36);
+  userPost({action:'progressSave',token:USER.token,examId:probeId,
+            attempt:{score:'test',detail:'save check',at:new Date().toISOString(),aid:aid}})
+  .then(function(j){
+    add('Backend accepted the save',(j&&j.examIds)?'yes (new backend)':'yes (older backend)',true);
+    return userPost({action:'progressGet',token:USER.token});
+  })
+  .then(function(j){
+    var rec=(j.progress||{})[probeId];
+    var found=!!(rec&&(rec.attempts||[]).some(function(x){return x.aid===aid}));
+    add('Read back from your account',found?'found it':'NOT FOUND \u2014 the backend accepted it but did not store it',found);
+    /* tidy up after ourselves */
+    return userPost({action:'progressSave',token:USER.token,examId:probeId,clear:true}).catch(function(){});
+  })
+  .then(function(){
+    show('<br><b>'+(lines.join('').indexOf('\u2717')>-1?'Something above is wrong.':
+      'Saving works on this device. ('+(Date.now()-t0)+'ms)')+'</b>');
+  })
+  .catch(function(e){
+    add('The save failed',(e&&e.message)||String(e),false);
+    var hint='';
+    if(usingSaved)hint='<br><b>Most likely cause:</b> the Admin panel is pointing at an old deployment. '+
+      '<button class="btn ghost small" id="usebuiltin">Use the address built into the site</button>';
+    else if(/Signed out/i.test((e&&e.message)||''))hint='<br><b>Your session expired.</b> Sign out and back in.';
+    else hint='<br>Check that the Apps Script deployment is set to <b>Execute as: Me</b> and <b>Who has access: Anyone</b>.';
+    show(hint);
+    var b=$('#usebuiltin');
+    if(b)b.onclick=function(){
+      var cur=api(); setApi({url:API_URL||'',key:cur.key||''});
+      runSaveCheck();
+    };
+  });
+}
+var lastApiError='';
+function postTo(url,payload){
+  return fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)})
+    .then(function(r){
+      if(!r.ok)throw new Error('The backend answered '+r.status+' '+(r.statusText||''));
+      return r.text();
+    })
+    .then(function(t){
+      var j;
+      try{j=JSON.parse(t)}
+      catch(e){throw new Error('The backend did not answer with data. It usually means the web app URL is wrong, or the deployment is not set to "Anyone".')}
+      if(j&&j.error)throw new Error(j.error);
+      return j;
+    });
+}
+/* Redeploying the Apps Script gives it a NEW /exec address. A URL saved in the
+   Admin panel quietly overrides the one built into the site, so a browser that
+   saved the old address keeps talking to the old deployment and every save
+   fails. If the saved address does not work, the built-in one is tried once
+   before giving up. */
 function userPost(payload){
   var a=api();
-  if(!a.url)return Promise.reject(new Error('The site is not connected to its backend yet.'));
-  return fetch(a.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)})
-    .then(function(r){return r.json()})
-    .then(function(j){if(j&&j.error)throw new Error(j.error);return j});
+  var url=a.url;
+  if(!url)return Promise.reject(new Error('The site is not connected to its backend yet.'));
+  return postTo(url,payload).then(function(j){lastApiError='';return j}).catch(function(e){
+    var builtIn=API_URL||'';
+    if(!builtIn||builtIn===url){lastApiError=e.message||String(e);throw e;}
+    return postTo(builtIn,payload).then(function(j){
+      lastApiError='';
+      apiFellBack=true;            /* the Admin panel points at a dead address */
+      return j;
+    }).catch(function(e2){
+      lastApiError=(e.message||String(e));
+      throw e;
+    });
+  });
 }
+var apiFellBack=false;
 function refreshUserUI(){
   var el=$('#navaccount');
   if(el)el.textContent=signedIn()?(USER.name||USER.email.split('@')[0]):'Sign in';
@@ -5209,10 +5336,14 @@ function renderAccount(){
       '<p class="muted">Your exam answers and scores follow this account on any device.</p>'+
       '<div class="nav"><button class="btn ghost" id="signoutbtn">Sign out</button>'+
       '<button class="btn ghost" id="refreshprog">Refresh my results</button>'+
-      (USER.isAdmin?'<a class="btn primary" href="#/admin">Open the Admin panel</a>':'')+'</div></div>'+
+      '<button class="btn ghost" id="savecheck">Check saving</button>'+
+      (USER.isAdmin?'<a class="btn primary" href="#/admin">Open the Admin panel</a>':'')+'</div>'+
+      '<div id="savediag" hidden style="margin-top:14px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;font-size:.86rem;line-height:1.6"></div>'+
+      '</div>'+
       '<div class="card" style="margin-top:18px"><h3 style="margin-top:0">My exam attempts</h3><div id="myattempts"></div></div>';
     $('#signoutbtn').onclick=function(){saveUser(null);location.hash='#/account'};
     $('#refreshprog').onclick=function(){pullProgress(true)};
+    $('#savecheck').onclick=function(){runSaveCheck()};
     renderMyAttempts();
     return;
   }
@@ -5291,6 +5422,7 @@ function renderMyAttempts(){
 
   var rows=[];
   Object.keys(pr).forEach(function(id){
+    if(id.indexOf('__')===0)return;        /* the saving check's throwaway record */
     var r=pr[id]||{}, ex=allItems().filter(function(x){return x.id===id})[0];
     var title=ex?ex.title:id;
     var list=(r.attempts||[]);
@@ -5356,23 +5488,58 @@ function pullExamPref(){
 var PKEY2='nycpm_progress_v1';
 function progressAll(){try{return JSON.parse(localStorage.getItem(PKEY2))||{}}catch(e){return {}}}
 function progressSet(id,rec){var p=progressAll();p[id]=rec;try{localStorage.setItem(PKEY2,JSON.stringify(p))}catch(e){}}
-/* The account is the source of truth for results. Anything this device has
-   not managed to send yet is flushed first, so taking the server's copy can
-   never discard a result that was still on its way out. */
+/* The account is the source of truth for results that reached it. What it must
+   never do is delete a result that has NOT reached it yet: an attempt sitting
+   in the queue because the backend refused it is still the student's attempt,
+   and overwriting the device with the server's copy is what made a submitted
+   exam vanish on the next refresh. So the server's copy is taken, and any
+   attempt still waiting to be sent is kept on top of it. */
+function pendingAids(){
+  var out={};
+  outRead().forEach(function(j){ if(j.attempt&&j.attempt.aid)out[j.attempt.aid]=j.examId; });
+  return out;
+}
+function keepUnsent(mine,srv){
+  var pend=pendingAids(),out={},id;
+  for(id in (srv||{}))out[id]=srv[id];
+  for(id in (mine||{})){
+    var m=mine[id]||{},kept=(m.attempts||[]).filter(function(a){return a.aid&&pend[a.aid]});
+    if(!kept.length)continue;                       /* nothing unsent for this exam */
+    var s0=out[id]||{examId:id,attempts:[]};
+    var have={};
+    (s0.attempts||[]).forEach(function(a){if(a.aid)have[a.aid]=1});
+    var merged=(s0.attempts||[]).concat(kept.filter(function(a){return !have[a.aid]}));
+    merged.sort(function(x,y){return String(x.at||'').localeCompare(String(y.at||''))});
+    out[id]={examId:id,attempts:merged.slice(-50),
+             state:(s0.state!==undefined?s0.state:m.state),
+             updated:m.updated||s0.updated};
+  }
+  return out;
+}
 function pullProgress(tell){
   if(!signedIn())return Promise.resolve();
   pullExamPref();
+  var mine=progressAll();
+  /* send anything outstanding first, so the server's answer is up to date */
   var first=outPending()?outFlush():Promise.resolve(true);
   return first.then(function(){
     return userPost({action:'progressGet',token:USER.token});
   }).then(function(j){
-    try{localStorage.setItem(PKEY2,JSON.stringify(j.progress||{}))}catch(e){}
+    var merged=keepUnsent(mine,j.progress||{});
+    try{localStorage.setItem(PKEY2,JSON.stringify(merged))}catch(e){}
     renderMyAttempts();renderExams();
-    if(tell)alert('Results refreshed from your account.');
+    if(tell){
+      var n=outPending();
+      alert(n?('Results refreshed. '+n+' result'+(n===1?'':'s')+' from this device '+(n===1?'has':'have')+
+               ' still not reached your account \u2014 press "Check saving" to see why.')
+             :'Results refreshed from your account.');
+    }
   }).catch(function(e){
+    /* a failed refresh must change nothing on the device */
     if(/Signed out/i.test(e.message)){saveUser(null);}
   });
 }
+
 /* ---- outbox: a save that is queued is a save that is not lost ----
    Results used to be posted once and forgotten: userPost(...).catch(noop). A
    slow backend, a dropped connection, or simply closing the tab a moment after
