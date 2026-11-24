@@ -12,7 +12,7 @@
    - the Apps Script backend, Google Drive and Google Fonts: never touched here
    - images and everything else same-origin: cache first, refreshed in the background
 */
-var VERSION = 'nycpm-v4';
+var VERSION = 'nycpm-v5';
 var SHELL   = ['./', './index.html'];
 
 self.addEventListener('install', function (e) {
