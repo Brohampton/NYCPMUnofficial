@@ -1300,6 +1300,33 @@ select.subsel{font:inherit;font-size:.82rem;color:var(--ink);background:var(--bg
 <script>
 (function(){
 "use strict";
+/* ---- survive a browser that refuses to store anything ----
+   Some browsers block site data per site, or clear it when the window closes.
+   The very first thing this script used to do was read localStorage, with no
+   guard, so in such a browser the whole site died on line one: no exams, no
+   saving, no error anybody could see. Storage is tested once here, and if it
+   is unavailable an in-memory stand-in takes its place. The site then works
+   normally for the visit and says plainly that nothing can be kept. */
+var NOSTORE=false,NOSTORE_ERR='';
+(function(){
+  try{
+    window.localStorage.setItem('__nycpm_probe','1');
+    if(window.localStorage.getItem('__nycpm_probe')!=='1')throw new Error('not stored');
+    window.localStorage.removeItem('__nycpm_probe');
+    return;
+  }catch(e){ NOSTORE=true; NOSTORE_ERR=(e&&(e.name||e.message))||'blocked'; }
+  var mem={};
+  var shim={
+    getItem:function(k){return Object.prototype.hasOwnProperty.call(mem,k)?mem[k]:null},
+    setItem:function(k,v){mem[k]=String(v)},
+    removeItem:function(k){delete mem[k]},
+    clear:function(){mem={}},
+    key:function(i){return Object.keys(mem)[i]||null}
+  };
+  try{Object.defineProperty(shim,'length',{get:function(){return Object.keys(mem).length}})}catch(e){}
+  try{Object.defineProperty(window,'localStorage',{configurable:true,get:function(){return shim}})}catch(e){}
+  try{Object.defineProperty(window,'sessionStorage',{configurable:true,get:function(){return shim}})}catch(e){}
+})();
 var $=function(s,r){return (r||document).querySelector(s)},
     $$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))};
 document.getElementById('yr').textContent=new Date().getFullYear();
@@ -1872,6 +1899,35 @@ $('#forgotbtn').addEventListener('click',function(){
 $('#lpass').addEventListener('keydown',function(e){if(e.key==='Enter')$('#loginbtn').click();});
 
 /* ---------------- backend (Google Apps Script) ---------------- */
+/* Bumped whenever this file changes, so you can tell at a glance whether a
+   particular browser is running the current copy or an old cached one. */
+var BUILD='2026-11-24a';
+
+/* ---- can this browser actually keep anything? ----
+   Everything the site remembers — your sign-in, your answers, your scores
+   waiting to be uploaded — lives in this browser's own storage. Some
+   browsers block it per site, or wipe it when you close the window. When that
+   happens every write fails quietly and it looks exactly like the site is
+   broken, so it is checked once and said out loud. */
+function storageCheck(){
+  return {local:!NOSTORE, idb:!!window.indexedDB, err:NOSTORE_ERR};
+}
+function warnIfNoStorage(){
+  var r=storageCheck();
+  if(r.local)return;
+  if(document.getElementById('nostorebar'))return;
+  var d=document.createElement('div');
+  d.id='nostorebar';
+  d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:9999;padding:12px 16px;'+
+    'background:#B3261E;color:#fff;font-size:.9rem;line-height:1.5;text-align:center';
+  d.innerHTML='<b>This browser is blocking storage for this site, so nothing can be saved \u2014 '+
+    'not your answers, not your scores.</b><br>Allow cookies and site data for this site '+
+    '(and turn off \u201cdelete site data when you close the browser\u201d), then reload. '+
+    '<button id="nostoreclose" style="margin-left:10px;padding:3px 10px;border-radius:6px;border:0;cursor:pointer">Hide</button>';
+  document.body.appendChild(d);
+  var b=document.getElementById('nostoreclose');
+  if(b)b.onclick=function(){d.parentNode.removeChild(d)};
+}
 var APIK='nycpm_api_v1';
 function api(){try{var a=JSON.parse(localStorage.getItem(APIK))||{};if(!a.url&&API_URL)a.url=API_URL;return a}catch(e){return {url:API_URL||''}}}
 function setApi(o){try{localStorage.setItem(APIK,JSON.stringify(o))}catch(e){}}
@@ -2724,6 +2780,12 @@ window.nycpmExamResult=function(examId,score,detail){
    looks exactly like a result that failed to save. */
 function sayExamSaved(examId){
   var n=$('#examnote'); if(!n)return;
+  if(!storageCheck().local){
+    n.innerHTML='<b>This browser is blocking storage for this site, so this score cannot be kept.</b> '+
+      'Allow cookies and site data for this site, then take it again. Your other browsers are unaffected.';
+    warnIfNoStorage();
+    return;
+  }
   if(!signedIn()){
     n.innerHTML='Scored and kept on this device. <b>You are not signed in, so it is not on an account.</b> '+
       '<a href="#/account">Sign in</a> and finish an attempt to keep your results and review them later.';
@@ -5235,6 +5297,10 @@ function runSaveCheck(){
     show();
   }
   var a=api(),builtIn=API_URL||'';
+  var st=storageCheck();
+  add('Site version here',BUILD+'  (compare this between browsers \u2014 they must match)');
+  add('This browser can store data',st.local?'yes':('NO \u2014 '+(st.err||'blocked')+'. Nothing can be saved in this browser.'),st.local);
+  add('Offline exam storage',st.idb?'available':'not available',st.idb);
   add('Signed in as',signedIn()?(USER.email||''):'NOT SIGNED IN \u2014 results cannot be saved to an account',signedIn());
   var usingSaved=!!(a.url&&a.url!==builtIn);
   add('Backend in use',a.url||'(none)');
@@ -5366,7 +5432,8 @@ function renderAccount(){
       '<div class="field"><label for="up">New password</label><input id="up" type="password" autocomplete="new-password"></div>'+
       '<button class="btn primary" id="doreset">Set new password</button>';
   box.innerHTML='<div class="formcard">'+tabs+'<div id="acctmsg"></div>'+form+
-    '<p class="mini" style="color:var(--muted);font-size:.82rem;margin-top:14px">An account is only needed to keep your exam results. Everything else on the site is free to read without one.</p></div>';
+    '<p class="mini" style="color:var(--muted);font-size:.82rem;margin-top:14px">An account is only needed to keep your exam results. Everything else on the site is free to read without one.</p>'+
+    browserLine()+'</div>';
   $$('#acctbody .chip.pick').forEach(function(b){b.onclick=function(){acctTab=b.getAttribute('data-at');renderAccount()}});
   var m=function(){return $('#acctmsg')};
   function val(id){var e=$(id);return e?e.value.trim():''}
@@ -5467,6 +5534,18 @@ function renderMyAttempts(){
     }).join('')+'</table></div>';
 }
 
+/* Shown on the sign-in page too, because a browser that cannot store anything
+   also cannot stay signed in \u2014 so the person who most needs to see this
+   cannot reach the signed-in checks. */
+function browserLine(){
+  var st=storageCheck();
+  var bits='<p class="mini" style="color:var(--muted);font-size:.78rem;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">'+
+    'Site version <b>'+esc(BUILD)+'</b>. If another browser shows a different version, that one is running an old copy \u2014 reload it twice.';
+  if(!st.local)bits+='<br><span style="color:#B3261E"><b>This browser is blocking storage for this site</b>'+
+    (st.err?(' ('+esc(st.err)+')'):'')+', so it cannot keep you signed in or save any results. '+
+    'Allow cookies and site data for this site, and turn off any setting that clears site data when the browser closes.</span>';
+  return bits+'</p>';
+}
 /* ---- exam preferences (answer-reveal mode) ---- */
 var EXPREF='nycpm_exam_reveal_instant';
 function readExamPref(){try{return localStorage.getItem(EXPREF)==='1'}catch(e){return false}}
@@ -6006,6 +6085,7 @@ function route(){
 window.addEventListener('hashchange',route);
 window.addEventListener('beforeunload',function(){if(fcPushTimer)fcPush();});
 loadUser();fcLoad();refreshAuthUI();renderList();renderExams();drawChips();setKind('doc');initExtras();route();
+warnIfNoStorage();
 refreshUserUI();
 /* anything still queued from a previous visit goes out straight away */
 if(signedIn())outFlush();
